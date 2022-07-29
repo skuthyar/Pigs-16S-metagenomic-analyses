@@ -1,0 +1,37 @@
+#decontaminate seqs: run through the 4.0.2 version of R instead of default 
+library(dplyr) 
+packageVersion("dvplyr")
+library(decontam)
+packageVersion("decontam")
+
+#load tables
+counts <- read.table(file = 'ASV_counts.tsv', sep = '\t', header = TRUE, row.names = 1)
+tax_table <- read.table(file = 'ASV_taxonomy.tsv', sep = '\t', header = TRUE, row.names = 1)
+asv_fasta <- readRDS("ASV_fasta.rds")
+
+#counts colnames should be a list of the samples, tax_table colnames should be kingdom phylum class etc...
+print("Counts columns")
+colnames(counts)
+print("Tax columns")
+colnames(tax_table)
+
+#create a list of T/F values where TRUE = negatives, FALSE = samples or positives (from sample.names)
+#rep is the number of samples that are TRUE or FALSE in order - change based on data
+vector_for_decontam <- c(rep(FALSE,107), rep(TRUE,4), rep(FALSE,1), rep(TRUE,2), rep(FALSE,54), rep(TRUE,2), rep(FALSE,1), rep(TRUE,1), rep(FALSE,9), rep(TRUE,1), rep(FALSE,1), rep(TRUE,1), rep(FALSE,40), rep(TRUE,2), rep(FALSE,49), rep(TRUE,6), rep(FALSE,24), rep(TRUE,16), rep(FALSE,51))
+
+#determine contaminants and store the ASV numbers identified as contam_asvs
+contam_df <- isContaminant(t(counts), neg = vector_for_decontam)
+#table output: how many of the ASVs were contaminants
+print("Contaminants")
+table(contam_df$contaminant)
+contam_asvs <- row.names(contam_df[contam_df$contaminant == TRUE, ])
+
+#display the taxonomy of each of the ASVs that were identified
+tax_table[row.names(tax_table) %in% contam_asvs, ]
+
+saveRDS(contam_asvs, "contam_asvs.rds")
+
+
+export MODULEPATH=/projects/builder-group/jpg/modulefiles/applications:$MODULEPATH
+module load R/4.0.2
+Rscript --no-save ~/scripts/decontam.R 
