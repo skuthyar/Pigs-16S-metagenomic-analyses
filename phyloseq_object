@@ -1,0 +1,9 @@
+TREE <- read.tree("tree.nwk")
+new.tree <- ape::multi2di(TREE)
+ASV_counts_decontam_16S_t <- t(ASV_counts_decontam_16S)
+ASV = otu_table(ASV_counts_decontam_16S_t, taxa_are_rows = FALSE)
+TAX = tax_table(as.matrix(ASV_taxonomy_decontam))
+META = sample_data(metadata_16S_matching)
+PIG_16S <- phyloseq(ASV, TAX, META, phy_tree(new.tree)) 
+
+PIG_16S_rarefied <- rarefy_even_depth(PIG_16S, sample.size=12000)
