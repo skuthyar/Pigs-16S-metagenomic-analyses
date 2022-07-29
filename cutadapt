@@ -2,14 +2,14 @@
 source ~/.bashrc
 conda activate cutadaptenv
 
-cd /projects/ps-aspenlab/kuthyar/PIG/raw_seqs
+cd ~/raw_seqs
 
 #unzip sequence files
 gunzip *.fastq.gz
 
-for SAMPLEID in $(cat /projects/ps-aspenlab/kuthyar/PIG/16S_Round3/samples.txt);
+for SAMPLEID in $(cat ~/samples.txt);
 
 do
         echo "On sample: $SAMPLEID"
-        cutadapt -g GTGCCAGCMGCCGCGGTAA -G GGACTACHVGGGTWTCTAAT -o /projects/ps-aspenlab/kuthyar/PIG/16S_Round3/trimmed/${SAMPLEID}_trimmed_R1.fastq -p /projects/ps-aspenlab/kuthyar/PIG/16S_Round3/trimmed/${SAMPLEID}_trimmed_R2.fastq /projects/ps-aspenlab/kuthyar/PIG/16S_Round3/raw_seqs/${SAMPLEID}_S*_L001_R1_001.fastq /projects/ps-aspenlab/kuthyar/PIG/16S_Round3/raw_seqs/${SAMPLEID}_S*_L001_R2_001.fastq
+        cutadapt -g GTGCCAGCMGCCGCGGTAA -G GGACTACHVGGGTWTCTAAT -o ~/trimmed/${SAMPLEID}_trimmed_R1.fastq -p ~/trimmed/${SAMPLEID}_trimmed_R2.fastq ~/raw_seqs/${SAMPLEID}_S*_L001_R1_001.fastq ~raw_seqs/${SAMPLEID}_S*_L001_R2_001.fastq
 done
