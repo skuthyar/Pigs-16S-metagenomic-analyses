@@ -1,0 +1,900 @@
+---
+title: "PIG_16S_Analyses"
+output:
+  pdf_document: default
+  html_document: default
+date: '2023-01-31'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is the R Markdown document for PIG 16S analyses. These data stem from an observation, cross-sectional approach that compares pig microbial composition, diversity, and functional potential across various domestication contexts.
+
+```{r files to read in}
+library(vegan)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(phyloseq)
+library(microbiome)
+library(GUniFrac)
+library(RColorBrewer)
+library(ape)
+library(Rcpp)
+library(ggpubr)
+library(readxl)
+setwd("~/Documents/PIG/PIG_Analysis_Chapter_1/16S_Round3/")
+ASV_counts_decontam_16S <- read.table("ASV_counts_decontam_nonegs.txt", header=T, check.names = FALSE)
+ASV_taxonomy_decontam <- read.delim("ASV_taxonomy_decontam.tsv", row.names=1, stringsAsFactors=TRUE)
+metadata_16S <- read_excel("fecal_metadata_Apr2022.xlsx") 
+metadata_16S_matching <- filter(metadata_16S, metadata_16S$sampleid %in% colnames(ASV_counts_decontam_16S))
+metadata_16S_matching <- column_to_rownames(metadata_16S_matching, var = "sampleid")
+metadata_16S_matching$dom_cat <- factor(metadata_16S_matching$dom_cat, levels = c("free-ranging wild", "captive wild", "free-ranging domestic","research","industrial"))
+
+```
+
+```{r phyloseq and rarefaction}
+TREE <- read.tree("tree.nwk")
+new.tree <- ape::multi2di(TREE)
+ASV_counts_decontam_16S_t <- t(ASV_counts_decontam_16S)
+ASV = otu_table(ASV_counts_decontam_16S_t, taxa_are_rows = FALSE)
+TAX = tax_table(as.matrix(ASV_taxonomy_decontam))
+META = sample_data(metadata_16S_matching)
+PIG_16S <- phyloseq(ASV, TAX, META, phy_tree(new.tree)) 
+summarize_phyloseq(PIG_16S)
+sd(sample_sums(PIG_16S))
+
+PIG_16S_rarefied <- rarefy_even_depth(PIG_16S, sample.size=12000)
+PIG_16S_rarefied_nopos <- prune_samples(sample_data(PIG_16S_rarefied)$dom_cat!="N/A", PIG_16S_rarefied)
+```
+
+```{r bacterial load}
+PIG_16S_abs <- prune_samples(sample_data(PIG_16S_rarefied_nopos)$bacterial_cells_per_g!="N/A", PIG_16S_rarefied_nopos)
+df_abs <- data.frame(sample_data(PIG_16S_abs))
+df_abs$bacterial_cells_per_g <- as.numeric(df_abs$bacterial_cells_per_g)
+kruskal.test(df_abs$bacterial_cells_per_g ~ df_abs$dom_cat)
+AbsDomCat <- ggplot(df_abs, aes(dom_cat, bacterial_cells_per_g, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + scale_y_log10() + ylab("Bacterial Cells per Gram of Feces")+ scale_fill_manual(values=c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#4a7398","free-ranging domestic"="#52360b","free-ranging wild"="#36651e"))+ stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + theme_bw()+theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="none") + theme(text = element_text(size = 15))
+AbsDomCat
+ggsave("absolute_abundance_16S.pdf", AbsDomCat, width=15, height=10)
+
+```
+
+## Beta diversity
+
+Bray Curtis NMDS ordinations
+
+```{r NMDS plots}
+brayPS <- ordinate(PIG_16S_rarefied_nopos, method = "NMDS")
+BC <- plot_ordination(PIG_16S_rarefied_nopos, brayPS, justDF = TRUE)
+
+#domestication context
+BC$for.legend <- paste(BC$dom_cat,BC$genetics, sep=".")
+BCPlot <- ggplot(data = BC, aes(x = NMDS1, y = NMDS2, color = for.legend)) +
+  geom_point(size = 3) + labs(title = "NMDS Plot for Microbial Composition") + scale_color_manual(values = c("industrial.domestic" = "#963a3a","research.domestic"="#ac6d2c","captive wild.wild"="#4a7398","free-ranging wild.wild"="#36651e","free-ranging domestic.domestic"="#52360b"), labels=c("industrial","research","captive wild","free-ranging wild","free-ranging domestic")) + theme(axis.text = element_text(size=15))
+BCPlot <- BCPlot + theme_bw() + theme(legend.title=element_blank()) + theme(legend.position="bottom") + guides(color=guide_legend(nrow=2))
+BCPlot
+pdf("~/Documents/PIG/PIG_Analysis_Chapter_1/16S_Round3/Figures/BC_plot_domcat.pdf")
+BCPlot
+dev.off()
+
+#environment within domestic
+PIG_16S_dom <- prune_samples(sample_data(PIG_16S_rarefied_nopos)$dom_cat %in% c("industrial","research","free-ranging domestic"), PIG_16S_rarefied_nopos)
+brayPS_dom <- ordinate(PIG_16S_dom, method = "NMDS")
+BC_dom <- plot_ordination(PIG_16S_dom, brayPS_dom, justDF = TRUE)
+BCPlot_dom <- ggplot(data = BC_dom, aes(x = NMDS1, y = NMDS2, color = dom_cat)) +
+  geom_point(size = 3) + labs(title = "Bray-Curtis Ordination for Microbial Composition in Domestic Pigs") + scale_color_manual(values = c("industrial" = "#963a3a","research"="#ac6d2c","free-ranging domestic"="#52360b"))
+BCPlot_dom <- BCPlot_dom + theme_bw() + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+BCPlot_dom
+pdf("~/Documents/PIG/PIG_Analysis_Chapter_1/16S_Round3/Figures/BC_plot_justdom.pdf")
+BCPlot_dom
+dev.off()
+
+#NMDS of location within domestic
+BCPlot_location_dom <- ggplot(data = BC_dom, aes(x = NMDS1, y = NMDS2, shape=dom_cat, color = location)) +
+  geom_point(size = 3) + labs(title = "Bray-Curtis Ordination of Location in Domestic Pigs")
+BCPlot_location_dom + theme_bw() + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+```
+
+Bray Curtis PCoA ordinations
+
+```{r PCoA}
+brayPS <- ordinate(PIG_16S_rarefied_nopos, method = "PCoA")
+BC <- plot_ordination(PIG_16S_rarefied_nopos, brayPS, color="dom_cat", shape="dom_cat") + geom_point(size = 4.5) + scale_shape_manual(values=c("industrial"=16,"research"=17,"free-ranging wild"=1,"free-ranging domestic"=15,"captive wild"=7)) + labs(title = "PCoA of Microbial Composition") + scale_color_manual(values = c("industrial" = "#963a3a","research"="#ac6d2c","free-ranging wild"="#36651e","free-ranging domestic"="#52360b", "captive wild" = "#4a7398")) 
+BC <- BC + theme_bw() + theme(legend.title=element_blank()) + theme(legend.position="bottom") +theme(text = element_text(size = 20)) + scale_fill_discrete(breaks=c('free-ranging wild', 'captive wild', 'free-ranging domestic','research','industrial'))   
+BC$layers <- BC$layers[-1]
+
+#lineage
+BCPlot_gen <- ggplot(data = BC, aes(x = Axis.1, y = Axis.2, color = genetics)) +
+  geom_point(size = 3) + labs(title = "Bray-Curtis Ordination Genetics")
+BCPlot_gen + theme_bw() + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+#location
+BCPlot_location <- ggplot(data = BC, aes(x = Axis.1, y = Axis.2, color = geography_cat)) +
+  geom_point(size = 3) + labs(title = "Bray-Curtis Ordination Location")
+BCPlot_location <- BCPlot_location + theme_bw() + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+
+```
+
+PERMANOVAs and beta dispersion
+
+```{r PERMANOVAs}
+#domestication context, species, and location
+adonis2(distance(PIG_16S_rarefied_nopos, method="bray") ~ sample_data(PIG_16S_rarefied_nopos)$dom_cat + sample_data(PIG_16S_rarefied_nopos)$species + sample_data(PIG_16S_rarefied_nopos)$location)
+
+#domestication context, lineage, and location
+adonis2(distance(PIG_16S_rarefied_nopos, method="bray") ~ sample_data(PIG_16S_rarefied_nopos)$dom_cat + sample_data(PIG_16S_rarefied_nopos)$genetics + sample_data(PIG_16S_rarefied_nopos)$location)
+
+#within domestic
+location.numeric <- sample_data(PIG_16S_dom)$location.numeric
+location.numeric <- as.numeric(location.numeric)
+antibiotic_exposure <- sample_data(PIG_16S_dom)$antibiotic_exposure
+outside_exposure <- sample_data(PIG_16S_dom)$outside_exposure
+adonis2(distance(PIG_16S_dom, method="bray") ~ antibiotic_exposure + outside_exposure + (1|location.numeric)) 
+
+```
+
+```{r beta dispersion}
+#lineage 
+dispersionGen <- betadisper(phyloseq::distance(PIG_16S_rarefied_nopos, method="wunifrac"), sample_data(PIG_16S_rarefied_nopos)$genetics)
+anova(dispersionGen)
+boxplot(dispersionGen)
+(dispersionHSD <- TukeyHSD(dispersionGen))
+
+#environment within domestic
+dispersionEnv <- betadisper(phyloseq::distance(PIG_16S_dom, method="wunifrac"), sample_data(PIG_16S_dom)$dom_cat)
+anova(dispersionEnv)
+boxplot(dispersionEnv)
+(dispersionHSD <- TukeyHSD(dispersionEnv))
+
+#antibiotics
+dispersionabx <- betadisper(phyloseq::distance(PIG_16S_rarefied_nopos, method="wunifrac"), sample_data(PIG_16S_rarefied_nopos)$antibiotic_exposure)
+anova(dispersionabx)
+boxplot(dispersionabx)
+(dispersionHSD <- TukeyHSD(dispersionabx))
+
+#outside exposure
+dispersionout <- betadisper(distance(PIG_16S_rarefied_nopos, method="wunifrac"), sample_data(PIG_16S_rarefied_nopos)$outside_exposure)
+anova(dispersionout)
+boxplot(dispersionout)
+(dispersionHSD <- TukeyHSD(dispersionout))
+
+```
+
+## Mantel Tests between 16S distance matrix and SNP distance matrix
+
+```{r Mantel test}
+#load matrices
+SNP_dist <- read.csv("SNP_dissMatrix.csv", row.names=1)
+SNP_dist <- as.matrix(SNP_dist)
+#subset 16S matrix for samples in SNP matrix
+SNP_ids <- c("PIG_SK_ab_1","PIG_SK_ab_2","PIG_SK_ab_4","PIG_SK_ab_3","PIG_SK_ab_7","PIG_SK_fw_ss_ab_11","PIG_SK_ab_13","PIG_SK_vt_1","PIG_SK_vt_2","PIG_SK_vt_3","PIG_SK_vt_4","PIG_SK_vt_5","PIG_SK_vt_7","PIG_SK_vt_8","PIG_SK_ucd_211","PIG_SK_ucd_183","PIG_SK_ucd_152","PIG_SK_ucd_206","PIG_SK_ucd_174","PIG_SK_ucd_249","PIG_SK_ucd_222","PIG_SK_nc_4712","PIG_SK_nc_4877","PIG_SK_nc_4859","PIG_SK_nc_4841","PIG_SK_nc_4926","PIG_SK_nc_4886","PIG_SK_nc_4703","PIG_SK_cp_2","PIG_SK_cp_3","PIG_SK_cp_7","PIG_SK_cp_8","PIG_SK_cp_9","PIG_SK_cp_10","PIG_SK_cp_18","PIG_SK_efs_7699","PIG_SK_efs_7702","PIG_SK_efs_7700","SK_NC_10","SK_NC_43","SK_NC_4","SK_NC_13","SK_NC_28","SK_NC_41","SK_NC_19","CA_43584","CA_43586","CA_43577")
+PIG_16S_SNP <- prune_samples(sample_data(PIG_16S)$sample.id %in% SNP_ids, PIG_16S)
+bray16S_dist = distance(PIG_16S_SNP, method = "bray")
+bray16S_dist <- as.matrix(bray16S_dist)
+bray16S_dist <- bray16S_dist[rownames(SNP_dist), colnames(SNP_dist)]
+#run mantel for 16S
+SNP_16S <- mantel(bray16S_dist, SNP_dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+SNP_16S
+
+#run mantel for KEGG
+SNP_KEGG <- read.csv("SNP_dissMatrix_KEGG.csv", row.names=1)
+SNP_KEGG_dist <- as.matrix(SNP_KEGG)
+SNP_KEGG_ids <- c("PIG_SK_ab_1","PIG_SK_ab_2","PIG_SK_ab_7","PIG_SK_fw_ss_ab_11","PIG_SK_ab_13","PIG_SK_vt_1","PIG_SK_vt_2","PIG_SK_vt_3","PIG_SK_vt_4","PIG_SK_vt_5","PIG_SK_vt_8","PIG_SK_ucd_211","PIG_SK_ucd_183","PIG_SK_ucd_174","PIG_SK_ucd_249","PIG_SK_ucd_222","PIG_SK_nc_4712","PIG_SK_nc_4877","PIG_SK_nc_4859","PIG_SK_nc_4841","PIG_SK_nc_4926","PIG_SK_nc_4886","PIG_SK_nc_4703","PIG_SK_cp_2","PIG_SK_cp_3","PIG_SK_cp_7","PIG_SK_cp_8","PIG_SK_cp_9","PIG_SK_cp_10","PIG_SK_cp_18","PIG_SK_efs_7699","PIG_SK_efs_7702","PIG_SK_efs_7700","SK_NC_10","SK_NC_43","SK_NC_4","SK_NC_13","SK_NC_28","SK_NC_41","SK_NC_19","CA_43584","CA_43586")
+KEGG_SNP <- prune_samples(sample_data(KEGG_phyloseq)$sampleid %in% SNP_KEGG_ids, KEGG_phyloseq)
+microViz::ps_reorder(KEGG_SNP, SNP_KEGG_ids)
+brayKEGG_dist = distance(KEGG_phyloseq, method = "bray")
+brayKEGG_dist <- as.matrix(brayKEGG_dist)
+brayKEGG_dist <- brayKEGG_dist[rownames(SNP_KEGG_dist), colnames(SNP_KEGG_dist)]
+SNP_KEGG <- mantel(brayKEGG_dist, SNP_KEGG_dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+SNP_KEGG
+
+```
+
+## Alpha diversity
+
+```{r Shannon diversity}
+sample_data(PIG_16S_rarefied_nopos)$Shannon <- estimate_richness(PIG_16S_rarefied_nopos, measure=c("Shannon"))$Shannon
+df1 <- data.frame(sample_data(PIG_16S_rarefied_nopos))
+#domestication context
+pairwise.wilcox.test(df1$Shannon, df1$dom_cat,
+                     p.adjust.method = "BH")
+ShannonDomCat <- ggplot(df1, aes(dom_cat, Shannon, fill = dom_cat)) + 
+  geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#4a7398","free-ranging domestic"="#52360b","free-ranging wild"="#36651e")) + stat_summary(fun = "mean", geom = "crossbar", width = 0.5,colour = "black") + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position ="none") + ylab("Shannon Diversity")+theme(text = element_text(size = 15))
+ShannonDomCat
+
+#lineage
+kruskal.test(sample_data(PIG_16S_rarefied_nopos)$Shannon ~ sample_data(PIG_16S_rarefied_nopos)$genetics)
+ShannonGen <- ggplot(df1, aes(genetics, Shannon, fill = genetics)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+ShannonGen 
+
+#species
+kruskal.test(sample_data(PIG_16S_rarefied_nopos)$Shannon ~ sample_data(PIG_16S_rarefied_nopos)$species)
+ShannonSpecies <- ggplot(df1, aes(species, Shannon, fill = species)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+ShannonSpecies
+
+#population
+kruskal.test(sample_data(PIG_16S_rarefied_nopos)$Shannon ~ sample_data(PIG_16S_rarefied_nopos)$location)
+ShannonLocation <- ggplot(df1, aes(location, Shannon, fill = location)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+ShannonLocation
+
+#outside exposure
+wilcox.test(Shannon ~ outside_exposure, df1, correct=TRUE) 
+ShannonOutside <- ggplot(df1, aes(outside_exposure, Shannon)) + 
+  geom_boxplot() + geom_point(position="jitter") + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+ShannonOutside
+
+#antibiotics
+wilcox.test(Shannon ~ antibiotics, df1, correct=TRUE) 
+ShannonAbx <- ggplot(df1, aes(antibiotics, Shannon)) + 
+  geom_boxplot() + geom_point(position="jitter") + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+ShannonAbx + stat_compare_means()
+
+#bacterial load
+sample_data(PIG_16S)$Shannon <- estimate_richness(PIG_16S, measure=c("Shannon"))$Shannon
+cor.test(sample_data(PIG_16S)$Shannon, sample_data(PIG_16S)$bacterial_cells_per_g, method = "spearman", exact=FALSE, na.action=na.omit)
+
+```
+
+```{r Richness}
+sample_data(PIG_16S_rarefied_nopos)$Richness <- estimate_richness(PIG_16S_rarefied_nopos, measure=c("Observed"))$Observed
+df2 <- data.frame(sample_data(PIG_16S_rarefied_nopos))
+#domestication context
+kruskal.test(sample_data(PIG_16S_rarefied_nopos)$Richness ~ sample_data(PIG_16S_rarefied_nopos)$dom_cat)
+RichnessDomCat <- ggplot(df2, aes(dom_cat, Richness, fill = dom_cat)) + 
+  geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#4a7398","free-ranging domestic"="#52360b","free-ranging wild"="#36651e")) +stat_summary(fun = "mean", geom = "crossbar", width = 0.5,colour = "black") + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="none") + ylab("Richness") + theme(text = element_text(size = 15))
+RichnessDomCat
+
+SuppFig2 <- ggarrange(AbsDomCat, ShannonDomCat, RichnessDomCat, labels=c("A","B","C"), ncol=3, nrow=1)
+ggsave("SuppFig2.pdf", SuppFig2, width=29, height=8)
+
+#species
+kruskal.test(sample_data(PIG_16S_rarefied_nopos)$Richness ~ sample_data(PIG_16S_rarefied_nopos)$species)
+RichnessSpecies <- ggplot(df2, aes(species, Richness, fill = species)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+RichnessSpecies
+
+#population
+kruskal.test(sample_data(PIG_16S_rarefied_nopos)$Richness ~ sample_data(PIG_16S_rarefied_nopos)$location)
+RichnessLocation <- ggplot(df2, aes(location, Richness, fill = location)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+RichnessLocation
+
+#antibiotics
+wilcox.test(Richness ~ antibiotics, df2, correct=TRUE)
+RichnessAbx <- ggplot(df2, aes(antibiotics, Richness)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+RichnessAbx 
+
+#outside exposure
+wilcox.test(Richness ~ outside_exposure, df2, correct=TRUE)
+RichnessOut <- ggplot(df2, aes(outside_exposure, Richness)) + 
+  geom_boxplot() + theme_bw() + theme(axis.title.x=element_blank()) + theme(legend.title=element_blank()) + theme(legend.position="bottom")
+RichnessOut
+
+#bacterial load
+sample_data(PIG_16S)$Richness <- estimate_richness(PIG_16S, measure=c("Observed"))$Observed
+kruskal.test(sample_data(PIG_16S)$Richness ~ sample_data(PIG_16S)$bacterial_cells_per_g)
+
+```
+
+## Pathogen abundance
+
+```{r create counts of zoonotic pathogens}
+#relative abundance
+ASV_counts_rel <- t(otu_table(PIG_16S_rarefied_nopos)/12000)
+
+#Coriobacteriaceae
+cor.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Family == "Coriobacteriaceae")),]
+cor.counts <- t(cor.counts)
+sample_data(PIG_16S_rarefied_nopos)$Coriobacteriaceae = cor.counts
+
+#Veillonellaceae
+veil.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Family == "Veillonellaceae")),]
+veil.counts <- t(veil.counts)
+sample_data(PIG_16S_rarefied_nopos)$Veillonellaceae = veil.counts
+
+#Akkermansiaceae
+akk.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Family == "Akkermansiaceae")),]
+akk.counts <- t(akk.counts)
+sample_data(PIG_16S_rarefied_nopos)$Akkermansiaceae = akk.counts
+
+#Yersinia enterocolitica = 0
+#Leptospira = 0
+#Brucella suis = 0
+
+#Salmonella enterica 
+sal.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Genus == "Salmonella")),]
+sal.counts <- t(sal.counts)
+sample_data(PIG_16S_rarefied_nopos)$Salmonella_enterica = sal.counts
+
+#Campylobacter jejuni
+jejuni.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Species == "jejuni")),]
+jejuni.counts <- t(jejuni.counts)
+sample_data(PIG_16S_rarefied_nopos)$Campylobacter_jejuni = jejuni.counts
+
+#E.coli
+ecoli.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Species == "coli")),]
+ecoli.counts <- t(ecoli.counts)
+sample_data(PIG_16S_rarefied_nopos)$E.coli = ecoli.counts
+
+#Streptococcus suis - ASV 921
+strep.suis.counts <- ASV_counts_rel[row.names(ASV_counts_rel)=="ASV_921",]
+strep.suis.counts <- t(strep.suis.counts)
+sample_data(PIG_16S_rarefied_nopos)$Streptococcus_suis = strep.suis.counts
+
+#Erysipelothrix rhusiopathiae
+ersye.counts <- ASV_counts_rel[row.names(ASV_counts_rel) %in% row.names(filter(ASV_taxonomy_decontam, ASV_taxonomy_decontam$Species == "rhusiopathiae")),]
+ersye.counts <- t(ersye.counts)
+sample_data(PIG_16S_rarefied_nopos)$Erysipelothrix_rhusiopathiae = ersye.counts
+
+df_relab <- data.frame(sample_data(PIG_16S_rarefied_nopos))
+write.csv(df_relab, "new_fecal_metadata_rarefied_with_pathogens.csv")
+
+```
+
+```{r create pathogen plots}
+df_relab <- read.csv("new_fecal_metadata_rarefied_with_pathogens.csv")
+df_relab$Summed_zoonotic_ab <- as.numeric(df_relab$Summed_zoonotic_ab) 
+#domestication context
+all_patho <- ggplot(df_relab, aes(dom_cat, Summed_zoonotic_ab+0.001, fill=dom_cat)) + geom_violin(trim=FALSE) + scale_y_log10() + stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + geom_point(position="jitter", size=3) + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#4a7398","free-ranging domestic"="#52360b","free-ranging wild"="#36651e")) + theme_bw() + theme(legend.position = "none") + theme(axis.title.x = element_blank()) + ylab("Total potential zoonotic pathogen cells/g") + theme(text = element_text(size = 20))
+all_patho 
+ggsave("all.patho.png", all_patho, width=15, height=10)
+pdf("~/Documents/PIG/PIG_Analysis_Chapter_1/16S_Round3/Figures/potential_patho_all_domcat.pdf")
+all_patho
+dev.off()
+
+#variation between domestication contexts
+kruskal.test(df_relab$Summed_zoonotic_ab ~ df_relab$dom_cat)
+pairwise.wilcox.test(df_relab$Summed_zoonotic_ab, df_relab$dom_cat,
+                     p.adjust.method = "BH")
+
+#population
+all_patho_location <- ggplot(df_relab, aes(location, Summed_zoonotic_ab+0.001, fill=dom_cat)) + geom_boxplot(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(axis.title.x = element_blank()) + ylab("Total number of zoonotic pathogen cells/g") 
+all_patho_location <- all_patho_location + theme(text = element_text(size = 15))
+all_patho_location
+
+#individual pathogen plots
+df_relab$E.coli.qpcr <- as.numeric(df_relab$E.coli.qpcr)
+e.coli <- ggplot(df_relab, aes(dom_cat, E.coli.qpcr+0.001, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(axis.title.x = element_blank()) + theme(axis.text.x = element_blank()) + ylab("Total number of E.coli cells/g") 
+e.coli
+
+df_relab$Salmonella.enterica.qpcr <- as.numeric(df_relab$Salmonella.enterica.qpcr)
+salmonella <- ggplot(df_relab, aes(dom_cat, Salmonella.enterica.qpcr, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(axis.title.x = element_blank()) + theme(axis.text.x = element_blank())+ylab("Total number of S. enterica cells/g") 
+salmonella 
+
+df_relab$Campylobacter_jejuni.qpcr <- as.numeric(df_relab$Campylobacter_jejuni.qpcr)
+campy <- ggplot(df_relab, aes(dom_cat, Campylobacter_jejuni.qpcr+0.001, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(axis.title.x = element_blank()) + theme(axis.text.x = element_blank())+ ylab("Total number of C. jejuni cells/g")
+campy
+
+df_relab$Streptococcus_suis.qpcr <- as.numeric(df_relab$Streptococcus_suis.qpcr)
+strep <- ggplot(df_relab, aes(dom_cat, Streptococcus_suis.qpcr+0.001, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(axis.title.x = element_blank()) + theme(axis.text.x = element_blank())+ylab("Total number of S. suis cells/g")
+strep
+
+df_relab$Erysipelothrix_rhusiopathiae.qpcr <- as.numeric(df_relab$Erysipelothrix_rhusiopathiae.qpcr)
+erysi <- ggplot(df_relab, aes(dom_cat, Erysipelothrix_rhusiopathiae.qpcr+0.001, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(axis.title.x = element_blank()) + theme(axis.text.x = element_blank()) + ylab("Total number of E.rhusiopathiae cells/g")
+erysi
+
+pathos <- ggarrange(e.coli, campy, strep, erysi, labels = c("A", "B", "C","D"))
+pathos
+pathos <- annotate_figure(pathos,
+                top = text_grob("Abundance of Zoonotic Pathogens", color = "black", face = "bold", size = 14),
+                bottom = text_grob("captive wild -- free-ranging domestic -- free-ranging wild -- industrial -- research", color = "black"))
+pathos
+
+#lineage
+gen_patho_stats <- wilcox.test(Summed_zoonotic_ab ~ genetics, df_relab, correct=TRUE)
+gen_patho_stats
+gen_patho <- ggplot(df_relab, aes(genetics, Summed_zoonotic_ab+0.001, fill=genetics)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + scale_y_log10() + theme_bw() + theme(legend.position = "none") + scale_fill_manual(values = c("domestic"="#E1AD01","wild" ="dark green")) + theme(axis.title.x = element_blank()) + ylab("Total number of zoonotic pathogen cells/g") 
+gen_patho <- gen_patho + theme(text = element_text(size = 15)) + scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+gen_patho
+
+```
+
+## Fecal IgA
+
+```{r fecal IgA}
+df_relab$fecal_IgA <- as.numeric(df_relab$fecal_IgA)
+fecal_iga_domcat <- ggplot(df_relab, aes(dom_cat, fecal_IgA, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=4)+scale_y_log10() + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + stat_summary(fun = "mean",geom = "crossbar",width = 0.5,colour = "black") + theme_bw() + theme(legend.position = "none")+theme(text = element_text(size = 20)) + ylab("Fecal IgA (ng/mL)") + theme(axis.title.x = element_blank())
+fecal_iga_domcat
+ggsave("Fecal_IgA_vio.pdf", fecal_iga_domcat, width=15, height=10)
+
+pairwise.wilcox.test(df_relab$fecal_IgA, df_relab$dom_cat,
+                     p.adjust.method = "BH")
+
+#Are differences driven by captive wild?
+wilcoxon_iga <- wilcox.test(fecal_IgA ~ captive.wild, df_relab, correct=TRUE)
+wilcoxon_iga
+
+#Are there differences without captive wild?
+df_relab_nocw <- subset(df_relab, df_relab$dom_cat!="captive wild")
+df_relab_nocw$fecal_IgA <- as.numeric(df_relab_nocw$fecal_IgA)
+wilcoxon_iga <- wilcox.test(fecal_IgA ~ industrial, df_relab_nocw, correct=TRUE)
+wilcoxon_iga
+
+#population
+df_relab_location <- subset(df_relab, df_relab$location.final != "California farm (2)")
+df_relab_location <- subset(df_relab_location, df_relab_location$location.final != "Cincinnati Zoo")
+df_relab_location <- subset(df_relab_location, df_relab_location$location.final != "North Carolina (1)")
+fecal_iga_location <- ggplot(df_relab_location, aes(location.final, fecal_IgA, fill=dom_cat)) + geom_violin(trim = FALSE, scale="width") + geom_point(position="jitter", size=3) + scale_y_log10() + stat_summary(fun = "mean",geom = "crossbar",width = 0.5,colour = "black") + theme_bw() + theme(legend.position = "none") + theme(axis.title.x = element_blank()) + ylab("Fecal IgA (ng/mL)") + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","captive wild"= "#52360b","free-ranging domestic"="#4a7398","free-ranging wild"="#36651e")) + theme(text = element_text(size = 14))
+fecal_iga_location
+ggsave("Fecal_IgA_vio_location.pdf", fecal_iga_location, width=25, height=10)
+
+nest <- aova(df_relab$fecal_IgA ~ df_relab$dom_cat / df_relab$fecal_IgA)
+summary(nest)
+
+#try without captive wild
+df_relab_nocw <- subset(df_relab, df_relab$dom_cat != "captive wild")
+nest2 <- aov(df_relab_nocw$fecal_IgA ~ df_relab_nocw$dom_cat / df_relab_nocw$fecal_IgA)
+summary(nest2)
+
+#microbial diversity?
+spearman_shannon_by_IgA <- cor.test(df_relab$fecal_IgA, df_relab$Shannon,
+                                    method = "spearman", exact=FALSE, na.action=na.exclude)
+spearman_shannon_by_IgA
+
+spearman_richness_by_IgA <- cor.test(df_relab$fecal_IgA, df_relab$Richness,
+                                    method = "spearman", exact=FALSE, na.action=na.exclude)
+spearman_richness_by_IgA
+
+ggplot(df_relab, aes(log(fecal_IgA), Shannon)) + geom_point() + stat_poly_line() +
+  stat_poly_eq() 
+ggplot(df_relab, aes(log(fecal_IgA), Richness)) + geom_point() +  stat_poly_line() +
+  stat_poly_eq()
+
+#bacterial load?
+cor.test(df_relab$bacterial_cells_per_g, df_relab$fecal_IgA,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+
+#pathogen abundances?
+cor.test(df_relab$Summed_zoonotic_ab, df_relab$fecal_IgA, na.action=na.exclude, method="kendall", exact=FALSE)
+
+#outside exposure?
+wilcox.test(fecal_IgA ~ outside_exposure, df_relab, correct=TRUE)
+
+#abx use?
+wilcox.test(fecal_IgA ~ antibiotics, df_relab, correct=TRUE)
+
+#abundance of Akkermansia? 
+df_relab$fecal_IgA <- as.numeric(df_relab$fecal_IgA)
+df_relab$Akkermansiaceae_total <- as.numeric(df_relab$Akkermansiaceae_total)
+cor.test(df_relab$Akkermansiaceae_total, df_relab$fecal_IgA, na.action=na.exclude, method="spearman", exact=FALSE)
+ggplot(df_relab, aes(fecal_IgA, Akkermansiaceae_total)) + geom_point() + stat_poly_line() +
+  stat_poly_eq()
+
+```
+
+## Cytokine Concentrations
+
+```{r IL6}
+PIG_16S_cyto <- prune_samples(sample_data(PIG_16S_rarefied_nopos)$dom_cat %in% c("industrial","research","free-ranging wild"), PIG_16S_rarefied_nopos)
+df_cyto <- data.frame(sample_data(PIG_16S_cyto))
+df_cyto$IL6 <- as.numeric(df_cyto$IL6)
+
+#domestication context
+IL6 <- ggplot(df_cyto, aes(dom_cat, IL6, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=4)+scale_y_log10() + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging wild"="#36651e")) 
+IL6 <- IL6 + stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + theme_bw() + theme(text = element_text(size = 20)) + theme(axis.title.x = element_blank()) + theme(legend.position = "none") + ylab("Concentration of IL-6 (pg/mL)")
+IL6 
+
+pairwise.wilcox.test(df_cyto$IL6, df_cyto$dom_cat,
+                     p.adjust.method = "BH")
+kruskal.test(df_cyto$IL6 ~ df_cyto$dom_cat)
+
+#bacterial load
+df_cyto$bacterial_cells_per_g <- as.numeric(df_cyto$bacterial_cells_per_g)
+cor.test(df_cyto$IL6, df_cyto$bacterial_cells_per_g,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+
+#fecal IgA
+df_cyto$fecal_IgA <- as.numeric(df_cyto$fecal_IgA)
+cor.test(df_cyto$IL6, df_cyto$fecal_IgA,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+
+#pathogen abundance
+cor.test(df_relab$IL6, df_relab$Summed_zoonotic_ab, method = "spearman", exact=FALSE, na.action=na.omit)
+
+cor.test(df_relab$IL6, df_relab$Coriobacteriaceae.total, method = "spearman", exact=FALSE, na.action=na.omit)
+ggplot(df_relab, aes(Coriobacteriaceae.total, IL6)) + geom_point() + stat_poly_line() +
+  stat_poly_eq()
+
+cor.test(df_relab$IL6, df_relab$Veillonellaceae.total, method = "spearman", exact=FALSE, na.action=na.omit)
+ggplot(df_relab, aes(Veillonellaceae.total, IL6)) + geom_point() + stat_poly_line() +
+  stat_poly_eq()
+
+```
+
+```{r IL10}
+df_cyto$IL10 <- as.numeric(df_cyto$IL10)
+#domestication context
+IL10 <- ggplot(df_cyto, aes(dom_cat, IL10, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + scale_y_log10() + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging wild"="#36651e")) + theme_bw() + ylab("Concentration of IL-10 (pg/mL)")
+IL10 <- IL10 + stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + theme(text = element_text(size = 20)) + theme(axis.title.x = element_blank()) + theme(legend.position = "none")
+IL10 
+
+pairwise.wilcox.test(df_cyto$IL10, df_cyto$dom_cat,
+                     p.adjust.method = "BH")
+kruskal.test(df_cyto$IL10 ~ df_cyto$dom_cat)
+
+#bacterial load
+df_cyto$bacterial_cells_per_g <- as.numeric(df_cyto$bacterial_cells_per_g)
+cor.test(df_cyto$IL10, df_cyto$bacterial_cells_per_g,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+
+#fecal IgA
+df_cyto$fecal_IgA <- as.numeric(df_cyto$fecal_IgA)
+cor.test(df_cyto$IL10, df_cyto$fecal_IgA,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+
+#pathogen abundance
+cor.test(df_relab$IL10, df_relab$Summed_ab, method = "spearman", exact=FALSE, na.action=na.omit)
+
+cor.test(df_relab$IL10, df_relab$Coriobacteriaceae.total, method = "spearman", exact=FALSE, na.action=na.omit)
+ggplot(df_relab, aes(Coriobacteriaceae.total, IL10)) + geom_point() + stat_poly_line() +
+  stat_poly_eq()
+
+cor.test(df_relab$IL10, df_relab$Veillonellaceae.total, method = "spearman", exact=FALSE, na.action=na.omit)
+ggplot(df_relab, aes(Veillonellaceae.total, IL10)) + geom_point() + stat_poly_line() +
+  stat_poly_eq()
+```
+
+
+```{r TNFa}
+df_cyto$TNFa <- as.numeric(df_cyto$TNFa)
+#domestication context
+pairwise.wilcox.test(df_cyto$TNFa, df_cyto$dom_cat,
+                     p.adjust.method = "BH")
+kruskal.test(df_cyto$TNFa ~ df_cyto$dom_cat)
+TNFalpha <- ggplot(df_cyto, aes(dom_cat, TNFa, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=3)+ scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging wild"="#36651e"))  + scale_y_log10()+theme_bw() + ylab("Concentration of TNF-alpha (pg/mL)")+stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black")
+TNFalpha <- TNFalpha + theme(legend.position = "none")+theme(text = element_text(size = 20)) + theme(axis.title.x = element_blank()) 
+TNFalpha
+
+#outside exposure
+TNF_alpha_outside <- ggplot(df_cyto, aes(outside_exposure, TNFa, fill=outside_exposure)) + geom_boxplot() + geom_point(position="jitter")+ scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging wild"="#36651e"))  + scale_y_log10()+theme_bw() + theme(axis.title.x = element_blank()) + ylab("Concentration of TNF-alpha pg/mL")
+TNF_alpha_outside <- TNF_alpha_outside + theme(legend.position = "none")
+TNF_alpha_outside
+
+#bacterial load
+df_cyto$bacterial_cells_per_g <- as.numeric(df_cyto$bacterial_cells_per_g)
+cor.test(df_cyto$TNFa, df_cyto$bacterial_cells_per_g,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+
+#fecal IgA
+df_relab$TNFa <- as.numeric(df_relab$TNFa)
+cor.test(df_relab$fecal_IgA, df_relab$TNFa,
+         method = "spearman", exact=FALSE, na.action=na.exclude)
+cor_TNFa_IgA <- ggplot(df_relab, aes(TNFa, log(fecal_IgA))) + geom_point(size=4) + stat_poly_line() +stat_poly_eq() + theme_bw() + xlab("TNF-alpha (pg/mL)") + ylab("Fecal IgA (ng/mL)") + theme(text = element_text(size = 20)) + theme(legend.position = "none")
+cor_TNFa_IgA
+
+#microbial diversity
+cor_div_IgA <- ggplot(df_relab, aes(Richness, log(fecal_IgA))) + geom_point(size=4) + stat_poly_line() +stat_poly_eq() + theme_bw() + xlab("Microbial Richness") + ylab("Fecal IgA (ng/mL)") + theme(text = element_text(size = 20)) + theme(legend.position = "none")
+
+#pathogen abundance
+cor.test(df_relab$TNFa, df_relab$Summed_zoonotic_ab, method = "spearman", exact=FALSE, na.action=na.omit)
+ggplot(df_relab, aes(Summed_zoonotic_ab, TNFa)) + geom_point(size=4)+ stat_poly_line() +
+  stat_poly_eq() 
+
+Fig4 <- ggarrange(IL6, IL10, TNFalpha, fecal_iga_domcat, fecal_iga_location, cor_TNFa_IgA, cor_div_IgA, labels=c("A","B","C","D","E","F", "G"), nrow=4, ncol=2)
+Fig4
+ggsave("Fig4.pdf", Fig4, width=40, height=20)
+
+cytokines <- ggpubr::ggarrange(IL6, IL10, TNFalpha, nrow=1, ncol=3, labels=c("A","B","C"))
+ggsave("cytokines_all.pdf", cytokines, width = 25, height = 15)
+
+#PCA
+#just population and cytokines
+df_cyto_loc <- df_cyto[,3:6]
+rownames(df_cyto_loc) <- df_cyto_loc$location
+df_cyto_loc <- df_cyto_loc[-1]
+df_cyto_loc$IL6 <- as.numeric(df_cyto_loc$IL6)
+df_cyto_loc$IL10 <- as.numeric(df_cyto_loc$IL10)
+df_cyto_loc$TNFa <- as.numeric(df_cyto_loc$TNFa)
+#calculate principal components
+cyto.pca <- prcomp(na.omit(df_cyto_loc), scale=TRUE)
+summary(cyto.pca)
+names(cyto.pca)
+cyto.pca$x[1:5,1:3]
+
+library(ggbiplot)
+ggbiplot(cyto.pca, labels=rownames(df_cyto_loc), labels.size = 3) + expand_limits(x=c(-1,4), y=c(-3, 2)) + theme_bw()
+
+var_explained <- cyto.pca$sdev^2/sum(cyto.pca$sdev^2)
+
+cyto.pca.df <- cyto.pca$x %>% 
+  as.data.frame %>%
+  rownames_to_column("location")
+
+cyto.pca.plot <- ggplot(cyto.pca.df, aes(x=PC1,y=PC2, color=location)) + geom_point(size=3) +
+  theme_bw(base_size=12) + 
+  labs(x=paste0("PC1: ",round(var_explained[1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[2]*100,1),"%")) + theme_bw()
+cyto.pca.plot
+
+```
+
+## Differential Abundance
+
+```{r Family Level - Wild vs. Domestic}
+library(ANCOMBC)
+plot.ancombc <- function(phy_object, taxonomy, grouping) {
+  tax_data = aggregate_taxa(phy_object, taxonomy)
+  tax_mat = as(tax_table(tax_data), "matrix")
+  ancombc_out = ancombc(phyloseq = tax_data, formula = grouping, p_adj_method = "BH", group = grouping)
+  res = ancombc_out$res
+  res_global = ancombc_out$res_global
+  
+  df_fig1 = data.frame(res$beta * res$diff_abn, check.names = FALSE) %>%
+    rownames_to_column("ASV")
+  colnames(df_fig1)[-1] = "BETA"
+  df_fig2 = data.frame(res$se * res$diff_abn, check.names = FALSE) %>%
+    rownames_to_column("ASV")
+  colnames(df_fig2)[-1] = "SD"
+  df_fig = df_fig1 %>% left_join(df_fig2, by = "ASV") %>%
+    transmute(ASV, BETA, SD) %>%
+    filter(BETA != 0) %>% arrange(desc(BETA)) %>%
+    mutate(group = ifelse(BETA >0, "g1", "g2"))
+  df_fig$ASV = factor(df_fig$ASV, levels = df_fig$ASV)
+  
+  return(df_fig)
+}
+
+#plot
+ANCOM_gen <- plot.ancombc(PIG_16S_rarefied_nopos, "Family", "genetics")
+#Only include log-fold change of 1 or -1
+ANCOM_gen_strict <- subset(ANCOM_gen, ANCOM_gen$BETA >= 1 | ANCOM_gen$BETA <= -1)
+ANCOM_gen_strict_fam <- vector(mode = "list", length = 16)
+for(row in 1:16) {
+  order <- ANCOM_gen_strict$ASV[row]
+  print(order)
+  for(tax in 1:length(t(ASV_taxonomy_decontam))) {
+    if(is.na(ASV_taxonomy_decontam$Family[tax])) {
+      print("NA")
+    } else if(ASV_taxonomy_decontam$Family[tax] == order){
+      Family <- ASV_taxonomy_decontam$Family[tax]
+      print("match")
+      print(Family)
+      ANCOM_gen_strict_fam[row] <- as.character(Family)
+      break
+    } else {
+    }
+  }
+}
+
+ANCOM_gen_strict$Family <- ANCOM_gen_strict_fam
+ANCOM_gen_strict$Family <-factor(ANCOM_gen_strict$Family, levels = unique(ANCOM_gen_strict_fam))
+ANCOM_gen_strict_Plot = ggplot(data = ANCOM_gen_strict,
+                          aes(x = ASV, y = BETA)) +
+  geom_point(size = 3, aes(colour = BETA>0, group = Family)) + scale_color_manual(values = c("#0047AB","#CC5500")) + 
+  geom_hline(yintercept = 0, size = 1) +
+  geom_errorbar(aes(ymin = BETA - SD, ymax = BETA + SD, color = BETA>0), width = 0.4,
+                position = position_dodge(0.05)) + 
+  labs(x = "Family", y = "Log fold change",
+       title = "Domestic vs. Wild") +
+  theme_classic() + theme(axis.text = element_text(size = 18)) + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.grid.minor.y = element_blank(),
+        axis.text.x = element_text(hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_blank())+theme(legend.position = "none") +
+  coord_flip()
+ANCOM_gen_strict_Plot
+
+```
+
+When we restrict differential abundance to above a log fold change of 1 or below -1, we find there are 17 families which are differentially abundant. Of note, Campylobacteraceae and Streptococcaceae have the highest log fold change in domestic pigs, and Akkermansia and Monoglobaceae have the highest log fold change in wild pigs.
+
+```{r Family Level - free ranging domestic and industrial pigs}
+PIG_dom <- prune_samples(sample_data(PIG_16S_rarefied_nopos)$dom_cat %in% c("industrial","free-ranging domestic"), PIG_16S_rarefied_nopos)
+
+ANCOM_env <- plot.ancombc(PIG_dom, "Family", "dom_cat")
+#Only include log-fold change of 1 or -1
+ANCOM_env_strict <- subset(ANCOM_env, ANCOM_env$BETA >= 1 | ANCOM_env$BETA <= -1)
+ANCOM_env_strict_fam <- vector(mode = "list", length = 21)
+for(row in 1:21) {
+  order <- ANCOM_env_strict$ASV[row]
+  print(order)
+  for(tax in 1:length(t(ASV_taxonomy_decontam))) {
+    if(is.na(ASV_taxonomy_decontam$Family[tax])) {
+      print("NA")
+    } else if(ASV_taxonomy_decontam$Family[tax] == order){
+      family <- ASV_taxonomy_decontam$Family[tax]
+      print("match")
+      print(family)
+      ANCOM_env_strict_fam[row] <- as.character(family)
+      break
+    } else {
+    }
+  }
+}
+ANCOM_env_strict$Family <- ANCOM_env_strict_fam
+ANCOM_env_strict$Family <-factor(ANCOM_env_strict$Family, levels = unique(ANCOM_env_strict_fam))
+ANCOM_env_strict_Plot = ggplot(data = ANCOM_env_strict,
+                        aes(x = ASV, y = BETA)) +
+  geom_point(size = 3, aes(colour = BETA>0, group = Family))+scale_color_manual(values=c("#52360b","#963a3a")) + geom_hline(yintercept = 0, size = 1) +
+  geom_errorbar(aes(ymin = BETA - SD, ymax = BETA + SD, color = BETA>0), width = 0.4,
+                position = position_dodge(0.05)) +
+  labs(x = "Family", y = "Log fold change",
+       title = "Free-ranging Domestic vs. Industrial") +
+  theme_classic() + theme(axis.text = element_text(size = 18)) + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.grid.minor.y = element_blank(),
+        axis.text.x = element_text(hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_blank())+theme(legend.position = "none") +
+  coord_flip()
+ANCOM_env_strict_Plot
+
+Fig2 <- ggpubr::ggarrange(ANCOM_gen_strict_Plot, ANCOM_env_strict_Plot, all_patho , labels=c("A","B","C"), nrow=1, ncol=3)
+ggsave('Fig2.pdf', plot  = Fig2, width = 45, height =12)
+
+```
+
+
+```{r ANCOM-BC between Research and Free-ranging domestic}
+PIG_dom2 <- prune_samples(sample_data(PIG_16S_rarefied_nopos)$dom_cat %in% c("research","free-ranging domestic"), PIG_16S_rarefied_nopos)
+
+ANCOM_env2 <- plot.ancombc(PIG_dom2, "Family", "dom_cat")
+#Only include log-fold change of 1 or -1
+ANCOM_env_strict2 <- subset(ANCOM_env2, ANCOM_env2$BETA >= 1 | ANCOM_env2$BETA <= -1)
+ANCOM_env_strict_fam2 <- vector(mode = "list", length = 11)
+for(row in 1:11) {
+  order <- ANCOM_env_strict2$ASV[row]
+  print(order)
+  for(tax in 1:length(t(ASV_taxonomy_decontam))) {
+    if(is.na(ASV_taxonomy_decontam$Family[tax])) {
+      print("NA")
+    } else if(ASV_taxonomy_decontam$Family[tax] == order){
+      family <- ASV_taxonomy_decontam$Family[tax]
+      print("match")
+      print(family)
+      ANCOM_env_strict_fam2[row] <- as.character(family)
+      break
+    } else {
+    }
+  }
+}
+ANCOM_env_strict2$Family <- ANCOM_env_strict_fam2
+ANCOM_env_strict2$Family <-factor(ANCOM_env_strict2$Family, levels = unique(ANCOM_env_strict_fam2))
+ANCOM_env_strict_Plot2 = ggplot(data = ANCOM_env_strict2,
+                        aes(x = ASV, y = BETA)) +
+  geom_point(size = 3, aes(colour = BETA>0, group = Family))+scale_color_manual(values=c("#52360b","#963a3a")) + geom_hline(yintercept = 0, size = 1) +
+  geom_errorbar(aes(ymin = BETA - SD, ymax = BETA + SD, color = BETA>0), width = 0.4,
+                position = position_dodge(0.05)) +
+  labs(x = "Family", y = "Log fold change",
+       title = "Free-ranging Domestic vs. Research") +
+  theme_classic() + theme(axis.text = element_text(size = 15)) + 
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.grid.minor.y = element_blank(),
+        axis.text.x = element_text(hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_blank())+theme(legend.position = "none") +
+  coord_flip()
+ANCOM_env_strict_Plot2
+```
+
+## Immune Models
+
+```{r Immune models}
+#What microbial data explains immune variation? 
+library(lme4)
+library(car)
+library(MASS)
+#fecal IgA
+df_relab <- read.csv("new_fecal_metadata_rarefied_with_pathogens.csv")
+df_relab <- subset(df_relab, df_relab$bacterial_cells_per_g !="NA")
+df_relab$Summed_zoonotic_ab <- as.numeric(df_relab$Summed_zoonotic_ab)
+df_relab_iga <- subset(df_relab, df_relab$fecal_IgA != "NA")
+df_relab_iga$fecal_IgA_log <- log(df_relab_iga$fecal_IgA)
+hist(df_relab_iga$fecal_IgA_log)
+
+qqp(df_relab_iga$fecal_IgA, "norm")
+qqp(df_relab_iga$fecal_IgA, "lnorm") 
+qqp(df_relab_iga$fecal_IgA_log, "lnorm")
+qqp(df_relab_iga$fecal_IgA, "nbinom", size = nbinom$estimate[[1]], mu = nbinom$estimate[[2]])
+gamma <- fitdistr(df_relab_iga$fecal_IgA_log, "gamma")
+qqp(df_relab_iga$fecal_IgA, "gamma", shape = gamma$estimate[[1]], rate = gamma$estimate[[2]])
+
+#Do bacterial cells need to be log-transformed?
+lmer_fecal_iga_log <- lmer(fecal_IgA ~ NMDS1 + Richness + log(bacterial_cells_per_g) + (1|location), data=df_relab_iga, REML=FALSE)
+plot(fitted(lmer_fecal_iga_log), residuals(lmer_fecal_iga_log), xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, lty = 2)
+lines(smooth.spline(fitted(lmer_fecal_iga_log), residuals(lmer_fecal_iga_log)))
+
+lmer_fecal_iga <- lmer(fecal_IgA ~ NMDS1 + Richness + bacterial_cells_per_g + (1|location), data=df_relab_iga, REML=FALSE)
+anova(lmer_fecal_iga, lmer_fecal_iga_log) #not significant
+
+#lmer full model 
+lmer_fecal_iga <- lmer(fecal_IgA ~ NMDS1 + Richness + bacterial_cells_per_g + Summed_zoonotic_ab + (1|location), data=df_relab_iga, REML=FALSE)
+summary(lmer_fecal_iga)
+Anova(lmer_fecal_iga)
+confint(lmer_fecal_iga)
+iga_model_est <- plot_model(lmer_fecal_iga, vline.color = "black", sort.est = TRUE) + theme_bw() + labs(title="Estimate of Fecal IgA")
+#scale_y_discrete(labels = c("NMDS1"="NMDS1","Richness"="Richness","bacterial_cells_per_g" = "Bacterial density","Summed_zoonotic_ab" = "Total pathogen abundance")) 
+iga_model_est
+plot(resid(lmer_fecal_iga))
+#variance from location explains ~30% (27.4%) of random effects
+#NMDS1 and Richness are not significant estimates of fecal IgA
+#bacterial cells per gram is, p-value=0.01
+ggplot(df_relab_iga, aes(x = fecal_IgA)) + geom_density() 
+
+plot(fitted(lmer_fecal_iga), residuals(lmer_fecal_iga), xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, lty = 2)
+lines(smooth.spline(fitted(lmer_fecal_iga), residuals(lmer_fecal_iga)))
+#but even the best fitting model is not a good fit for fecal IgA, even though residuals are random
+
+library(sjPlot)
+#Visualise random effects 
+(re.effects <- plot_model(lmer_fecal_iga, type = "re", show.values = TRUE)) + theme_bw()
+#Visualize estimates
+(est.effects <- plot_model(lmer_fecal_iga, type = "est", show.values = TRUE)) + theme_bw()
+
+#compare NMDS and Richness vs NMDS, Richness, and bacterial cells
+lmer_fecal_iga4 <- lmer(fecal_IgA ~ NMDS1 + Richness + (1|location), data=df_relab_iga)
+summary(lmer_fecal_iga4) #no significance
+
+#compute AIC likelihood between NMDS and Richness vs NMDS, Richness, and bacterial cells
+(AIC(lmer_fecal_iga4)-AIC(lmer_fecal_iga))*log2(exp(1))
+anova(lmer_fecal_iga, lmer_fecal_iga4) #lmer_fecal_iga is better
+
+#Cytokines
+df_relab_IL6 <- subset(df_relab, df_relab$IL6!="NA")
+df_relab_IL6$Summed_zoonotic_ab <- as.numeric(df_relab_IL6$Summed_zoonotic_ab)
+hist(df_relab_IL6$IL6)
+
+qqp(df_relab_IL6$IL6, "norm")
+qqp(df_relab_IL6$IL6, "lnorm")#log normal distribution
+
+#full model
+lmer_IL6 <- lmer(IL6 ~ NMDS1 + Richness + bacterial_cells_per_g + Summed_zoonotic_ab + (1|location), data=df_relab_IL6)
+Anova(lmer_IL6)
+confint(lmer_IL6)
+summary(lmer_IL6) #no fixed effects are good estimators of IL-6
+IL6_est_plot <- plot_model(lmer_IL6, vline.color = "black", sort.est = TRUE) + theme_bw() + labs(title="Estimates of IL-6")
+plot(resid(lmer_IL6))
+
+#Visualise random effects 
+(re.effects <- plot_model(lmer_IL6, type = "re", show.values = TRUE))
+#Visualize fixed effects
+(est.effects <- plot_model(lmer_IL6, type="est"))
+
+df_relab_IL10 <- subset(df_relab, df_relab$IL10!="NA")
+df_relab_IL10$Summed_zoonotic_ab <- as.numeric(df_relab_IL10$Summed_zoonotic_ab)
+#full model
+lmer_IL10 <- lmer(IL10 ~ NMDS1 + Richness + bacterial_cells_per_g + Summed_zoonotic_ab + (1|location), data=df_relab_IL10)
+Anova(lmer_IL10)
+confint(lmer_IL10)
+summary(lmer_IL10) #no fixed effects are good estimators of IL-10
+IL10_est_plot <- plot_model(lmer_IL10, vline.color = "black", sort.est = TRUE) + theme_bw()+labs(title="Estimates of IL-10")
+plot(resid(lmer_IL10))
+
+#Visualise random effects 
+(re.effects <- plot_model(lmer_IL10, type = "re", show.values = TRUE))
+#Visualize fixed effects
+(est.effects <- plot_model(lmer_IL10, type="est"))
+
+df_relab_TNFa <- subset(df_relab, df_relab$TNFa!="NA")
+df_relab_TNFa$Summed_zoonotic_ab <- as.numeric(df_relab_TNFa$Summed_zoonotic_ab)
+
+lmer_TNFa <- lmer(TNFa ~ NMDS1 + Richness + bacterial_cells_per_g + Summed_zoonotic_ab + (1|location), data=df_relab_TNFa)
+Anova(lmer_TNFa)
+confint(lmer_TNFa)
+summary(lmer_TNFa) #no fixed effects are good estimators of TNF-alpha
+TNFa_est_plot <- plot_model(lmer_TNFa, vline.color = "black", sort.est = TRUE, show.values = TRUE, axis.labels = "", value.offset = .4) + theme_bw() + labs(title="Estimates of TNF-alpha")
+TNFa_est_plot
+TNFa_est_plot <- plot_model(lmer_TNFa, type="pred", terms = c("Richness")) + theme_bw() + labs(title="Estimates of TNF-alpha")
+TNFa_est_plot
+plot(resid(lmer_TNFa))
+
+#Visualise random effects 
+(re.effects <- plot_model(lmer_TNFa, type = "re", show.values = TRUE))
+#Visualize fixed effects
+(est.effects <- plot_model(lmer_TNFa, type="est"))
+
+estimate_plots <- ggarrange(iga_model_est, IL6_est_plot, IL10_est_plot, TNFa_est_plot, nrow=2, ncol=2)
+ggsave("lmer_estimate_plots.pdf", estimate_plots, width=10, height=10)
+
+```
+
