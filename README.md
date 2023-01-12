@@ -11,7 +11,7 @@ The following files should be used in order to process raw 16S rRNA gene sequenc
 
 The output will be an ASV decontaminated counts table, an ASV taxonomy table, and a phylogenetic tree. The R markdown file (16S_analyses.Rmd) will allow you to replicate any statistical analyses and visualizations for 16S rRNA gene sequencing. The excel file, fecal_metadata_Apr2022.xlsx, contains all the metadata needed for these analyses.
 
-##########################################################################################################################################################
+##########################################################################################################################
 
 The following files should be used in order to process raw shotgun metagenomic data: 
 1. Quality filtering and trimming using Fastp
