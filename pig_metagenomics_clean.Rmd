@@ -1,0 +1,993 @@
+---
+title: "PIG_metagenomics_clean"
+output: html_document
+date: '2023-01-04'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document for shotgun metagenomic analyses of the pig gut microbiome. These data stem from an observation, cross-sectional approach that compares pig microbial composition, diversity, and functional potential across various domestication contexts.
+
+```{r packages}
+library(readr)
+library(dplyr)
+library(tximport)
+library(DESeq2) 
+library(ggplot2)
+library(clusterProfiler) 
+library(ggrepel)
+library(vegan) 
+library(ggbeeswarm)
+library(kableExtra)
+library(phyloseq)
+
+```
+
+```{r eggnog function}
+read_eggnog <- function(path, format = "emapper1"){
+  if(format == "emapper1"){
+    res <- readr::read_tsv(path,
+                           comment = "#",
+                           col_names = c("query", "seed_ortholog", "evalue",
+                                         "score",	"eggNOG_OGs", "max_annot_lvl",
+                                         "COG_category", "Description", "Preferred_name", "GOs",
+                                         "EC", "KEGG_ko", "KEGG_Pathway", "KEGG_Module", "KEGG_Reaction", "KEGG_rclass ",
+                                         "BRITE", "KEGG_TC", "CAZy", "BiGG_Reaction", "PFAMs"),
+                           col_types = readr::cols(.default = readr::col_character(),
+                                                   score = readr::col_double(),
+                                                   evalue = readr::col_double()))
+  }else if(format == "uhgg"){
+    # Read weird UHGG eggnog annots
+    res <- read_lines(path, n_max = Inf, skip = 1) %>%
+      str_split_fixed(pattern = "\t", n = 22) %>%
+      as_tibble(.name_repair = function(x) paste0("X", 1:length(x)))
+    res[ res == "" ] <- NA
+    colnames(res) <- c("query", "seed_eggNOG_ortholog", "seed_ortholog_evalue",
+                       "seed_ortholog_score", "best_tax_level",	"predicted_gene_name",
+                       "GO_terms", "EC_terms", "KEGG_KOs", "KEGG_pathways","KEGG_modules",
+                       "KEGG_reaction", "KEGG_rclass", "BRITE", "KEGG_TC", "CAZy",
+                       "BiGG_reactions", "tax_scope", "OGs",
+                       "bestOG|evalue|score", "COG_cat", "eggNOG_annot")
+  }else{
+    stop("ERROR: format must be 'emapper1' or 'uhgg'", call. = TRUE)
+  }
+  
+  
+  return(res)
+}
+
+eggnog <- read_eggnog("all.emapper.annotations.cont", format="emapper1")
+
+```
+
+```{r total counts (TPM) for annotations}
+library("GenomicFeatures")
+#read eggnog file
+eggnog <- as.data.frame(eggnog)
+eggnog <- eggnog[,c(1,12)]
+tx2gene<- eggnog[,c(1,2)]
+
+sample_file_path <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/salmon_filepath_quant.csv")
+samples <- sample_file_path$samples #what the samples are
+salmon.dir<- sample_file_path$file_path #where the quant files are
+tx.KEGG_KO <- tximport(files = sample_file_path$filepath, type = "salmon", tx2gene = tx2gene, 
+                      countsFromAbundance = "lengthScaledTPM")
+
+KO.counts<- tx.KEGG_KO$counts
+KO.counts<- as.data.frame(KO.counts)
+KO.counts$gene_name<- rownames(KO.counts)
+colnames(KO.counts) <- sample_file_path$sample
+write.csv(KO.counts, "KO_counts.csv")
+
+#add definitions to orthologs
+KO_counts <- read_csv("KO_counts_edit.csv")
+KO_counts_long <- KO_counts %>% 
+  mutate(KO=strsplit(KO, ",")) %>% 
+  unnest(KO)
+nrow(KO_counts_long)
+KEGG_KO_def <- left_join(pathways, pathway_names, by="path")
+
+KO_counts_long_def <- KO_counts_long %>%
+  mutate(KO = gsub("ko:", "", KO)) 
+KO_counts_long_def <- left_join(KO_counts_long_def, KEGG_KO_def, by="KO")
+write.csv(KO_counts_long_def, "KO_counts_long.csv")
+
+#CAZymes
+eggnog <- as.data.frame(eggnog)
+eggnog <- eggnog[,c(1,19)]
+tx2gene<- eggnog[,c(1,2)]
+
+sample_file_path <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/salmon_filepath_quant.csv")
+samples <- sample_file_path$samples #what the samples are
+salmon.dir<- sample_file_path$file_path #where the quant files are
+tx.CAZy <- tximport(files = sample_file_path$filepath, type = "salmon", tx2gene = tx2gene, 
+                       countsFromAbundance = "lengthScaledTPM")
+
+CAZy.counts<- tx.CAZy$counts
+CAZy.counts<- as.data.frame(CAZy.counts)
+CAZy.counts$gene_name<- rownames(CAZy.counts)
+colnames(CAZy.counts) <- sample_file_path$sample
+write.csv(CAZy.counts, "CAZy_counts.csv")
+
+#VFDB
+VF <- readRDS("vfdb_queries.rds")
+VF <- as.data.frame(VF)
+VF <- VF[,c(1,2)]
+tx2gene<- VF[,c(1,2)]
+
+sample_file_path <-read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/salmon_filepath_quant.csv")
+samples <- sample_file_path$samples #what the samples are
+salmon.dir <- sample_file_path$file_path #where the quant files are
+salmon.files<- file.path(samples, salmon.dir, "quant.sf") #unsure
+all(file.exists(salmon.files))
+tx.VFDB <- tximport(files = sample_file_path$filepath, type = "salmon", tx2gene = tx2gene, 
+                      countsFromAbundance = "lengthScaledTPM")
+
+VF.counts<- tx.VFDB$counts
+VF.counts<- as.data.frame(VF.counts)
+VF.counts$gene_name<- rownames(VF.counts)
+colnames(VF.counts) <- sample_file_paths$sample
+write.csv(VF.counts, "VF_counts.csv")
+
+#ARO
+amr <- readRDS("amr.rds")
+amr_strict = amr %>% filter(Cut_Off=="Strict")
+tx2gene_amr_strict <- amr_strict %>% 
+  select(Contig, Best_Hit_ARO) %>%
+  rename(TXNAME = Contig, GENEID = Best_Hit_ARO)
+tx2gene_amr_strict$GENEID <- ifelse(is.na(tx2gene_amr_strict$GENEID), tx2gene_amr_strict$TXNAME, tx2gene_amr_strict$GENEID)
+write_tsv(tx2gene_amr_strict, "amr_strict_tx2gene.tsv")
+txi_card <- read_tsv("amr_strict_tx2gene.tsv") %>%
+  mutate(TXNAME=ifelse(grepl(pattern = "--k.*_[0-9]+_[0-9]_1$", x = TXNAME), gsub("_1$", "", TXNAME), TXNAME))
+
+sample_file_path <-read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/CARD_nucl/card_salmon_filepath.csv")
+samples <- sample_file_path$samples #what the samples are
+salmon.dir<- sample_file_path$file_path #where the quant files are
+tx.CARD <- tximport(files = sample_file_path$filepath, type = "salmon", tx2gene = txi_card, countsFromAbundance = "lengthScaledTPM")
+
+ARO.counts<- tx.CARD$counts
+ARO.counts<- as.data.frame(ARO.counts)
+ARO.counts$gene_name<- rownames(ARO.counts)
+colnames(ARO.counts) <- sample_file_path$sample
+write.csv(ARO.counts, "ARO_counts.csv")
+
+#Drug Class 
+amr_strict = amr %>% filter(Cut_Off=="Strict")
+tx2gene_amr_strict_drug_class <- amr_strict %>% 
+  select(Contig, Drug.Class) %>%
+  rename(TXNAME = Contig, GENEID = Drug.Class)
+tx2gene_amr_strict_drug_class$GENEID <- ifelse(is.na(tx2gene_amr_strict_drug_class$GENEID), tx2gene_amr_strict_drug_class$TXNAME, tx2gene_amr_strict_drug_class$GENEID)
+write_tsv(tx2gene_amr_strict_drug_class, "amr_strict_drug_class_tx2gene.tsv")
+
+txi_drug <- read_tsv("amr_strict_drug_class_tx2gene.tsv") %>%
+  mutate(TXNAME=ifelse(grepl(pattern = "--k.*_[0-9]+_[0-9]_1$", x = TXNAME), gsub("_1$", "", TXNAME), TXNAME))
+sample_file_path <-read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/CARD_nucl/card_salmon_filepath.csv")
+samples <- sample_file_path$samples #what the samples are
+tx.DRUG <- tximport(files = sample_file_path$filepath, type = "salmon", tx2gene = txi_drug, countsFromAbundance = "lengthScaledTPM")
+
+DRUG.counts<- tx.DRUG$counts
+DRUG.counts<- as.data.frame(DRUG.counts)
+DRUG.counts$gene_name<- rownames(DRUG.counts)
+colnames(DRUG.counts) <- sample_file_path$sample
+write.csv(DRUG.counts, "DRUG.counts.csv")
+
+```
+
+```{r KEGG KO}
+tx2gene_KO <- eggnog %>%
+  select(query, KEGG_ko) %>%
+  rename(TXNAME = query, GENEID = KEGG_ko)
+tx2gene_KO$GENEID <- ifelse(is.na(tx2gene_KO$GENEID), tx2gene_KO$TXNAME, tx2gene_KO$GENEID)
+write_tsv(tx2gene_KO, "eggnog_tx2gene_KO.tsv")
+txi_KO <- read_tsv("eggnog_tx2gene_KO.tsv")
+txi_KO <- filter(txi_KO, grepl("K", GENEID))
+samples <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/salmon_filepath_quant.csv")
+samples_KO_counts <- tximport(files = samples$filepath, type = "salmon", tx2gene = txi_KO)
+
+samples_KO_counts_raw <- samples_KO_counts$counts
+colnames(samples_KO_counts_raw) <- samples$sample
+samples_KO_counts_raw <- as.data.frame(samples_KO_counts_raw)
+samples_KO_counts_raw$ortholog <- rownames(samples_KO_counts_raw)
+write_tsv(samples_KO_counts_raw, "KO_counts_raw.tsv")
+
+#lineage
+ddsTxi_kegg <- DESeqDataSetFromTximport(samples_KO_counts,
+                                        colData = samples,
+                                        design = ~ genetics)
+dds_kegg <- DESeq(ddsTxi_kegg)
+res <- results(dds_kegg)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(ortholog = rownames(.)) %>%
+  filter(grepl("K", ortholog)) %>%         # keep only kegg orthologs
+  filter(padj < .001) %>%                 #p value less than .001 
+  arrange(log2FoldChange)               
+
+plot_status_sig <- function(KO, dds = dds_kegg, sig_df){
+  KO_df <- plotCounts(dds, gene = KO, 
+                      intgroup = c("genetics"), 
+                      normalized = TRUE, transform = TRUE, returnData=TRUE)
+  
+  ggplot(KO_df, aes(x = genetics, y = count)) + 
+    geom_point(position=position_jitter(w = 0.1,h = 0)) +
+    theme_bw() +
+    ggtitle(KO) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_y_log10() +
+    labs(caption = paste0("log2 Fold Change = ", 
+                          round(sig_df[sig_df$ortholog == KO, "log2FoldChange"],
+                                digits = 3),
+                          "; ", 
+                          "p = ", 
+                          round(sig_df[sig_df$ortholog == KO, "padj"], 
+                                digits = 3)))
+}
+
+#SCFAs
+#acetate-producing enzymes (acetate kinase [K00925] and phosphate acetyltransferase enzymes [K00625 or K13788])
+plot_status_sig(KO = "ko:K00925", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+plot_status_sig(KO = "ko:K00625", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+plot_status_sig(KO = "ko:K13788", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+
+#propionate CoA-transferase gene (K01026)
+plot_status_sig(KO = "ko:K01026", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+
+#butyryl-CoA:acetate CoA-transferase (K01034, K01035)
+plot_status_sig(KO = "ko:K01034", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+plot_status_sig(KO = "ko:K01035", dds = dds_kegg, sig_df = res_sig) + stat_compare_means()
+
+#butyrate kinase (K00634, K00929) pathways
+plot_status_sig(KO = "ko:K00634", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+plot_status_sig(KO = "ko:K00929", dds = dds_kegg, sig_df = res_sig) + stat_compare_means() 
+
+#Enriched pathways
+pathways <- "http://rest.kegg.jp/link/pathway/ko"
+download.file(url = pathways, destfile = "kegg_pathways.tsv")
+pathways <- read_tsv("kegg_pathways.tsv", col_names = c("KO", "path"))
+pathways <- pathways %>%
+  mutate(KO = gsub("ko:", "", KO)) %>%
+  filter(grepl(pattern = "map", path)) %>%
+  #mutate(path = gsub("path:", "", path)) %>%
+  dplyr::select(path, KO)
+
+pathway_names <- "http://rest.kegg.jp/list/pathway"
+download.file(url = pathway_names, destfile = "kegg_pathway_names.tsv")
+pathway_names <- read_tsv("kegg_pathway_names.tsv", col_names = c("path", "name"))
+
+res_ind <- res_sig %>% 
+  filter(log2FoldChange > 0) %>%
+  mutate(ortholog = gsub(".*,","", ortholog)) %>% # select last KO in annotation
+  mutate(ortholog = gsub("ko:", "", ortholog))
+
+enriched_ind <- enricher(gene = res_ind$ortholog, maxGSSize = 5000,
+                         TERM2GENE = pathways, TERM2NAME = pathway_names)
+wildpigs_KO <- clusterProfiler::dotplot(enriched_ind, font.size = 18, showCategory = nrow(enriched_ind@result)) 
+
+res_rep <- res_sig %>% 
+  filter(log2FoldChange < 0) %>%
+  mutate(ortholog = gsub(".*,","", ortholog))%>%
+  mutate(ortholog = gsub("ko:", "", ortholog))
+
+enriched_rep <- enricher(gene = res_rep$ortholog, maxGSSize = 5000,
+                         TERM2GENE = pathways, TERM2NAME = pathway_names)
+dompigs_KO <- clusterProfiler::dotplot(enriched_rep, font.size = 18, showCategory = nrow(enriched_rep@result)) 
+
+#domestication context
+ddsTxi_kegg_dom <- DESeqDataSetFromTximport(samples_KO_counts,
+                                        colData = samples,
+                                        design = ~ dom_cat)
+dds_kegg_dom <- DESeq(ddsTxi_kegg_dom)
+dds_kegg_dom <- saveRDS(dds_kegg,"dds_kegg_dom.rds")
+dds_kegg_dom <- readRDS("dds_kegg_dom.rds")
+resType <- results(dds_kegg_dom,
+                     contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+
+resType_sig <- resType %>%
+  as.data.frame %>%
+  mutate(ortholog = rownames(.)) %>%
+  filter(grepl("K", ortholog)) %>%         # keep only kegg orthologs
+  filter(padj < .001) %>%                 #p value less than .001 
+  arrange(log2FoldChange)                 
+
+#Enriched pathways
+pathways <- "http://rest.kegg.jp/link/pathway/ko"
+download.file(url = pathways, destfile = "kegg_pathways.tsv")
+pathways <- read_tsv("kegg_pathways.tsv", col_names = c("KO", "path"))
+pathways <- pathways %>%
+  mutate(KO = gsub("ko:", "", KO)) %>%
+  filter(grepl(pattern = "map", path)) %>%
+  #mutate(path = gsub("path:", "", path)) %>%
+  dplyr::select(path, KO)
+
+pathway_names <- "http://rest.kegg.jp/list/pathway"
+download.file(url = pathway_names, destfile = "kegg_pathway_names.tsv")
+pathway_names <- read_tsv("kegg_pathway_names.tsv", col_names = c("path", "name"))
+
+res_ind <- resType_sig %>% 
+  filter(log2FoldChange > 0) %>%
+  mutate(ortholog = gsub(".*,","", ortholog)) %>% # select last KO in annotation
+  mutate(ortholog = gsub("ko:", "", ortholog))
+
+enriched_ind <- enricher(gene = res_ind$ortholog, maxGSSize = 5000,
+                         TERM2GENE = pathways, TERM2NAME = pathway_names)
+clusterProfiler::dotplot(enriched_ind, font.size = 7, showCategory = nrow(enriched_ind@result)) 
+
+res_rep <- resType_sig %>% 
+  filter(log2FoldChange < 0) %>%
+  mutate(ortholog = gsub(".*,","", ortholog))%>%
+  mutate(ortholog = gsub("ko:", "", ortholog))
+
+enriched_rep <- enricher(gene = res_rep$ortholog, maxGSSize = 5000,
+                         TERM2GENE = pathways, TERM2NAME = pathway_names)
+
+resType <- results(dds_kegg_dom,
+                   contrast=c("dom_cat", "free-ranging domestic", "research"))
+
+resType_sig <- resType %>%
+  as.data.frame %>%
+  mutate(ortholog = rownames(.)) %>%
+  filter(grepl("K", ortholog)) %>%         # keep only kegg orthologs
+  filter(padj < .001) %>%                 #p value less than .001 
+  arrange(log2FoldChange)                 
+
+#Enriched pathways
+pathways <- "http://rest.kegg.jp/link/pathway/ko"
+download.file(url = pathways, destfile = "kegg_pathways.tsv")
+pathways <- read_tsv("kegg_pathways.tsv", col_names = c("KO", "path"))
+pathways <- pathways %>%
+  mutate(KO = gsub("ko:", "", KO)) %>%
+  filter(grepl(pattern = "map", path)) %>%
+  #mutate(path = gsub("path:", "", path)) %>%
+  dplyr::select(path, KO)
+
+pathway_names <- "http://rest.kegg.jp/list/pathway"
+download.file(url = pathway_names, destfile = "kegg_pathway_names.tsv")
+pathway_names <- read_tsv("kegg_pathway_names.tsv", col_names = c("path", "name"))
+
+res_ind <- resType_sig %>% 
+  filter(log2FoldChange > 0) %>%
+  mutate(ortholog = gsub(".*,","", ortholog)) %>% # select last KO in annotation
+  mutate(ortholog = gsub("ko:", "", ortholog))
+
+enriched_ind <- enricher(gene = res_ind$ortholog, maxGSSize = 5000,
+                         TERM2GENE = pathways, TERM2NAME = pathway_names)
+clusterProfiler::dotplot(enriched_ind, font.size = 7, showCategory = nrow(enriched_ind@result)) 
+
+res_rep <- resType_sig %>% 
+  filter(log2FoldChange < 0) %>%
+  mutate(ortholog = gsub(".*,","", ortholog))%>%
+  mutate(ortholog = gsub("ko:", "", ortholog))
+
+enriched_rep <- enricher(gene = res_rep$ortholog, maxGSSize = 5000,
+                         TERM2GENE = pathways, TERM2NAME = pathway_names)
+clusterProfiler::dotplot(enriched_rep, font.size = 7, showCategory = nrow(enriched_rep@result)) 
+
+
+```
+
+```{r PCA of KEGG KOs}
+vsd <- vst(dds_kegg)
+pca_data <- plotPCA(vsd, intgroup = c("dom_cat"), returnData=TRUE)
+percentVar <- round(100 * attr(pca_data, "percentVar"))
+
+KEGG_KO_PCA <- ggplot(pca_data, aes(PC1, PC2, color=dom_cat, shape=dom_cat)) + scale_color_manual(values = c("industrial" = "#963a3a","research"="#ac6d2c","free-ranging wild"="#36651e","free-ranging domestic"="#52360b")) + 
+  theme_bw() +
+  geom_point(size=4.5) +
+  xlab(paste0("PC1: ",percentVar[1],"%")) +
+  ylab(paste0("PC2: ",percentVar[2],"%")) + theme(text = element_text(size = 20)) + scale_shape_manual(values=c("industrial"=16,"research"=17,"free-ranging wild"=1,"free-ranging domestic"=15,"captive wild"=7)) + 
+  ggtitle("PCA of KEGG orthologs") + theme(legend.title = element_blank()) + theme(legend.position="bottom")
+
+#permanova
+vsd_assay <- t(assay(vsd))
+rownames(vsd_assay) <- colData(vsd)$sample
+veg_dist <- vegdist(vsd_assay, "bray")
+dom_cat_meta_metadata <- read_excel("dom_cat_metagenomic_metadata.xls")
+perm <- adonis2(veg_dist ~ domestication_category + genetics + location, 
+                data = dom_cat_meta_metadata, 
+                permutations = 10000)
+
+```
+
+```{r Mantel Test}
+kegg_counts_norm_long <- kegg_counts_norm %>% 
+  mutate(KEGG_ko=strsplit(KEGG_ko, ",")) %>% 
+  unnest(KEGG_ko)
+kegg_counts_only <- kegg_counts_norm_long[ ,1:56]  
+ASV = otu_table(kegg_counts_only, taxa_are_rows = TRUE)
+KEGG_ko <- kegg_counts_norm_long[,57]
+TAX = tax_table(as.matrix(KEGG_ko))
+dom_cat_meta_metadata <- read_excel("dom_cat_metagenomic_metadata.xlsx")
+dom_cat_meta_metadata <- as.data.frame(dom_cat_meta_metadata)
+row.names(dom_cat_meta_metadata) <- dom_cat_meta_metadata$sampleid
+
+META = sample_data(dom_cat_meta_metadata)
+KEGG_phyloseq <- phyloseq(ASV, TAX, META)
+
+sample.names <- sample_names(KEGG_phyloseq)
+PIG_16S_subset <- prune_samples(sample_data(PIG_16S)$sample.id %in% sample.names, PIG_16S)
+
+#Mantel test 
+brayKEGG_dist = distance(KEGG_phyloseq, method = "bray")
+bray16S_dist = distance(PIG_16S_subset, method = "bray")
+KEGG_16S <- mantel(brayKEGG_dist, bray16S_dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+KEGG_16S
+
+```
+
+```{r KEGG Modules}
+tx2gene_mod <- eggnog %>%
+  select(query, KEGG_Module) %>%
+  rename(TXNAME = query, GENEID = KEGG_Module)
+tx2gene_mod$GENEID <- ifelse(is.na(tx2gene_mod$GENEID), tx2gene_mod$TXNAME, tx2gene_mod$GENEID)
+write_tsv(tx2gene_mod, "mod_tx2gene.tsv")
+txi_mod <- read_tsv("mod_tx2gene.tsv")
+samples <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/salmon_filepath_quant.csv")
+samples_mod_counts <- tximport(files = samples$filepath, type = "salmon", tx2gene = txi_mod)
+
+samples_mod_counts_raw <- samples_mod_counts$counts
+colnames(samples_mod_counts_raw) <- samples$sample
+samples_mod_counts_raw <- as.data.frame(samples_mod_counts_raw)
+samples_mod_counts_raw$ortholog <- rownames(samples_mod_counts_raw)
+write_tsv(samples_mod_counts_raw, "mod_counts_raw.tsv")
+mod_counts_raw <- read_tsv("mod_counts_raw.tsv")
+
+#lineage
+dsTxi_mod <- DESeqDataSetFromTximport(samples_mod_counts,
+                                      colData = samples,
+                                      design = ~ genetics)
+dds_mod <- DESeq(ddsTxi_mod)
+res <- results(dds_mod)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(Module = rownames(.)) %>%
+  filter(padj < .001) %>%                   # p value less than .001 
+  arrange(log2FoldChange)                
+
+res_sig_pos <- res_sig %>%
+  filter(log2FoldChange > 0)
+
+res_sig_neg <- res_sig %>%
+  filter(log2FoldChange < 0)
+
+res_sig_long <- res_sig %>%
+  mutate(Module=strsplit(Module, ",")) %>%
+  unnest(Module)
+
+res_sig_long_def <- left_join(res_sig_long, modules, by="Module")  
+write_tsv(res_sig_long_def, "kegg_modules_gen_sig.tsv")
+
+plot_status_sig <- function(Module, dds = dds_mod, sig_df){
+  Module_df <- plotCounts(dds, gene = Module, 
+                      intgroup = c("genetics"), 
+                      normalized = TRUE, transform = TRUE, returnData=TRUE)
+  
+  ggplot(Module_df, aes(x = genetics, y = count)) + 
+    geom_point(position=position_jitter(w = 0.1,h = 0)) +
+    theme_bw() +
+    ggtitle(Module) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_y_log10() +
+    labs(caption = paste0("log2 Fold Change = ", 
+                          round(sig_df[sig_df$Module == Module, "log2FoldChange"],
+                                digits = 3),
+                          "; ", 
+                          "p = ", 
+                          round(sig_df[sig_df$Module == Module, "padj"])))
+}
+
+#example plot of tetracycline resistance 
+plot_status_sig(Module = "M00704", dds = dds_mod, sig_df = res_sig) + ylab("Normalized Counts") +labs(title="Tetracycline Resistance, efflux pump Tet38") + theme(axis.title.x=element_blank())
+
+#domestication context
+dsTxi_mod_dom <- DESeqDataSetFromTximport(samples_mod_counts,
+                                      colData = samples,
+                                      design = ~ dom_cat)
+resType <- results(dds_mod_dom,
+                   contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+
+resType_sig <- resType %>%
+  as.data.frame %>%
+  mutate(Module = rownames(.)) %>%
+  filter(padj < .001) %>%                   # p value less than .001 
+  arrange(log2FoldChange)                   
+
+res_ind <- resType_sig %>% 
+  filter(log2FoldChange > 0) 
+res_rep <- resType_sig %>%
+  filter(log2FoldChange < 0) 
+
+resType <- results(dds_mod_dom,
+                   contrast=c("dom_cat", "free-ranging domestic", "research"))
+
+resType_sig <- resType %>%
+  as.data.frame %>%
+  mutate(Module = rownames(.)) %>%
+  filter(padj < .001) %>%                   # p value less than .001 
+  arrange(log2FoldChange)                   
+
+res_ind <- resType_sig %>% 
+  filter(log2FoldChange > 0) 
+res_rep <- resType_sig %>%
+  filter(log2FoldChange < 0) 
+
+```
+
+```{r CAZy}
+tx2gene_CAZy <- eggnog %>%
+  select(query, CAZy) %>%
+  rename(TXNAME = query, GENEID = CAZy)
+tx2gene_CAZy$GENEID <- ifelse(is.na(tx2gene_CAZy$GENEID), tx2gene_CAZy$TXNAME, tx2gene_CAZy$GENEID)
+write_tsv(tx2gene_CAZy, "tx2gene_CAZy.tsv")
+txi_CAZy <- read_tsv("tx2gene_CAZy.tsv")
+samples <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/salmon_filepath_quant.csv")
+samples_CAZy_counts <- tximport(files = samples$filepath, type = "salmon", tx2gene = txi_CAZy)
+
+samples_CAZy_counts_raw <- samples_CAZy_counts$counts
+colnames(samples_CAZy_counts_raw) <- samples$sample
+samples_CAZy_counts_raw <- as.data.frame(samples_CAZy_counts_raw)
+samples_CAZy_counts_raw$ortholog <- rownames(samples_CAZy_counts_raw)
+write_tsv(samples_CAZy_counts_raw, "CAZy_counts_raw.tsv")
+
+#lineage
+ddsTxi_CAZy <- DESeqDataSetFromTximport(samples_CAZy_counts,
+                                       colData = samples,
+                                       design = ~ genetics)
+dds_CAZy <- DESeq(ddsTxi_CAZy)
+res <- results(dds_CAZy)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(CAZyme = rownames(.)) %>%
+  filter(padj < .001) %>%                   # p value less than .001 
+  arrange(log2FoldChange)                 
+
+res_sig_pos <- res_sig %>%
+  filter(log2FoldChange > 0)
+
+res_sig_neg <- res_sig %>%
+  filter(log2FoldChange < 0)
+
+res_sig_long <- res_sig %>% 
+mutate(CAZyme=strsplit(CAZyme, ",")) %>% 
+unnest(CAZyme)
+
+#domestication context
+ddsTxi_CAZy_dom <- DESeqDataSetFromTximport(samples_CAZy_counts,
+                                        colData = samples,
+                                        design = ~ dom_cat)
+resType <- results(dds_CAZy_dom,
+                   contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+
+resType_sig <- resType %>%
+  as.data.frame %>%
+  mutate(CAZyme = rownames(.)) %>%
+  filter(padj < .001) %>%                   # p value less than .001 
+  arrange(log2FoldChange)                  
+
+resType <- results(dds_CAZy_dom,
+                   contrast=c("dom_cat", "free-ranging domestic", "research"))
+
+resType_sig <- resType %>%
+  as.data.frame %>%
+  mutate(CAZyme = rownames(.)) %>%
+  filter(padj < .001) %>%                   # p value less than .001 
+  arrange(log2FoldChange)                   
+
+#total CAZy genes
+total_CAZy <- read_excel("total_CAZy.xlsx")
+total_CAZy$CAZy_total <- as.numeric(total_CAZy$CAZy_total)
+my_comparisons_mg <- list( c("free-ranging wild", "free-ranging domestic"), c("free-ranging wild", "research"), c("free-ranging wild","industrial"), c("free-ranging domestic","research"), c("free-ranging domestic","industrial"), c("research","industrial"))
+wilcox.test(CAZy_total ~ genetics, total_CAZy, correct=TRUE)
+pairwise.wilcox.test(total_CAZy$CAZy_total, total_CAZy$dom_cat,
+                     p.adjust.method="BH")
+CAZy_total_plot <- ggplot(total_CAZy, aes(dom_cat, CAZy_total, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + 
+  stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + 
+  theme_bw() + theme(legend.position = "none") + scale_y_log10() + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging domestic"="#52360b","free-ranging wild"="#36651e")) + 
+  theme(axis.title.x = element_blank()) + ylab("Transcripts per Million") + theme(text = element_text(size = 20)) + stat_compare_means(comparisons=my_comparisons_mg)
+
+```
+
+```{r VFDB}
+ddsTxi_vfdb <- DESeqDataSetFromTximport(samples_vfdb_counts,
+                                        colData = samples,
+                                        design = ~ genetics)
+dds_vfdb <- DESeq(ddsTxi_vfdb)
+res <- results(dds_vfdb)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(VF = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                
+
+res_sig_pos <- res_sig %>%
+  filter(log2FoldChange > 0) 
+
+res_sig_neg <- res_sig %>%
+  filter(log2FoldChange < 0) 
+
+#domestication context
+ddsTxi_vfdb_dom <- DESeqDataSetFromTximport(samples_vfdb_counts,
+                                        colData = samples,
+                                        design = ~ dom_cat)
+dds_vfdb_dom <- DESeq(ddsTxi_vfdb_dom)
+res <- results(dds_vfdb_dom, contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+res_sig_dom <- res %>%
+  as.data.frame %>%
+  mutate(VF = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                 
+
+res_sig_dom_pos <- res_sig_dom %>%
+  filter(log2FoldChange > 0) 
+
+res_sig_dom_neg <- res_sig_dom %>%
+  filter(log2FoldChange < 0) 
+
+res_sig_dom_match <- left_join(res_sig_dom, vfdb_matches, by="VF")
+
+res <- results(dds_vfdb_dom, contrast=c("dom_cat", "free-ranging domestic", "research"))
+res_sig_dom <- res %>%
+  as.data.frame %>%
+  mutate(VF = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                  
+
+res_sig_dom_pos <- res_sig_dom %>%
+  filter(log2FoldChange > 0) 
+
+res_sig_dom_neg <- res_sig_dom %>%
+  filter(log2FoldChange < 0) 
+
+res_sig_dom_match <- left_join(res_sig_dom, vfdb_matches, by="VF")
+
+#total VFs
+total_vf <- read_excel("total_vf.xlsx")
+total_vf$dom_cat <- as.factor(total_vf$dom_cat)
+total_vf$total_transcripts_per_million <- as.numeric(total_vf$total_transcripts_per_million)
+kruskal.test(total_vf$total_transcripts_per_million ~ total_vf$dom_cat)
+pairwise.wilcox.test(total_vf$total_transcripts_per_million, total_vf$dom_cat,
+                     p.adjust.method = "BH")
+
+total_vf_plot <- ggplot(total_vf, aes(dom_cat, total_transcripts_per_million, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + theme_bw()  + theme(legend.position = "none") + theme(axis.title.x = element_blank())
+total_vf_plot <- total_vf_plot+ scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging domestic"="#52360b","free-ranging wild"="#36651e")) + ylab("Transcripts per million") 
+total_vf_plot <- total_vf_plot + theme(text = element_text(size = 20)) + scale_y_log10() + stat_compare_means(comparisons=my_comparisons_mg)
+
+#correlation with pathogen abundances
+total_vf$total_patho_ab <- as.numeric(total_vf$total_patho_ab)
+cor.test(total_vf$total_transcripts_per_million, total_vf$total_patho_ab, method="spearman")
+ggplot(total_vf, aes(total_patho_ab, total_transcripts_per_million)) + geom_point() + scale_y_log10() + stat_poly_line() +
+  stat_poly_eq() + theme_bw()
+
+#variation with lineage
+kruskal.test(total_vf$total_transcripts_per_million ~ total_vf$genetics)
+
+#variation with location
+kruskal.test(total_vf$total_transcripts_per_million ~ total_vf$location)
+ggplot(total_vf, aes(location, total_transcripts_per_million, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=3) + theme_bw()  + theme(legend.position = "none") + theme(axis.title.x = element_blank())
+
+#E. coli VF
+ecoli_vf_total <- read_excel("ecoli_total.xlsx")
+ecoli_vf_total$total_Ecoli_VF <- as.numeric(ecoli_vf_total$total_Ecoli_VF)
+ggplot(ecoli_vf_total, aes(dom_cat, total_Ecoli_VF)) + geom_boxplot() + theme_bw() + scale_y_log10() 
+kruskal.test(ecoli_vf_total$total_Ecoli_VF ~ ecoli_vf_total$dom_cat)
+pairwise.wilcox.test(ecoli_vf_total$total_Ecoli_VF, ecoli_vf_total$dom_cat,
+                     p.adjust.method = "BH")
+
+```
+
+```{r CARD - ARO}
+amr_strict = amr %>% filter(Cut_Off=="Strict")
+tx2gene_amr_strict <- amr_strict %>% 
+  select(Contig, Best_Hit_ARO) %>%
+  rename(TXNAME = Contig, GENEID = Best_Hit_ARO)
+tx2gene_amr_strict$GENEID <- ifelse(is.na(tx2gene_amr_strict$GENEID), tx2gene_amr_strict$TXNAME, tx2gene_amr_strict$GENEID)
+write_tsv(tx2gene_amr_strict, "amr_strict_tx2gene.tsv")
+
+txi_card <- read_tsv("amr_strict_tx2gene.tsv") %>%
+  mutate(TXNAME=ifelse(grepl(pattern = "--k.*_[0-9]+_[0-9]_1$", x = TXNAME), gsub("_1$", "", TXNAME), TXNAME))
+write_tsv(txi_card, "txi_card.tsv")
+txi_card <- read_tsv("txi_card.tsv")
+samples <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/CARD_nucl/card_salmon_filepath.csv")
+samples_card_counts <- tximport(files = samples$filepath, type = "salmon", tx2gene = txi_card)
+
+samples_card_counts_raw <- samples_card_counts$counts
+colnames(samples_card_counts_raw) <- samples$sample
+samples_card_counts_raw <- as.data.frame(samples_card_counts_raw)
+samples_card_counts_raw$ortholog <- rownames(samples_card_counts_raw)
+write_tsv(samples_card_counts_raw, "card_counts_raw.tsv")
+
+#lineage
+ddsTxi_card <- DESeqDataSetFromTximport(samples_card_counts,
+                                        colData = samples,
+                                        design = ~ genetics)
+dds_card <- DESeq(ddsTxi_card)
+res <- results(dds_card)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(ARO = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                 
+
+res_sig_pos <- res_sig %>%
+  filter(log2FoldChange > 0) 
+
+res_sig_neg <- res_sig %>%
+  filter(log2FoldChange < 0) 
+
+#domestication context
+ddsTxi_card_dom <- DESeqDataSetFromTximport(samples_card_counts,
+                                        colData = samples,
+                                        design = ~ dom_cat)
+dds_card_dom <- DESeq(ddsTxi_card_dom)
+res_dom <- results(dds_card_dom, contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+res_dom_sig <- res_dom %>%
+  as.data.frame %>%
+  mutate(ARO = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                 
+
+res_dom_sig_pos <- res_dom_sig %>%
+  filter(log2FoldChange > 0) 
+
+res_dom_sig_neg <- res_dom_sig %>%
+  filter(log2FoldChange < 0) 
+
+#total AROs
+total_ARO_samples <- read_excel("total_ARO_samples.xlsx")
+total_ARO_samples$total_ARO_TPM <- as.numeric(total_ARO_samples$total_ARO_TPM)
+
+#lineage
+wilcox.test(total_ARO_TPM ~ genetics, total_ARO, correct=TRUE)
+total_ARO_plot_gen <- ggplot(total_ARO, aes(genetics, total_ARO_TPM)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + theme_bw() + theme(legend.position = "none") + theme(axis.title.x = element_blank())
+total_ARO_plot_gen <- total_ARO_plot_gen + ylab("Transcripts per million") + labs(title="Total Abundance of ARGs between Wild and Domestic Pigs")
+total_ARO_plot_gen <- total_ARO_plot_gen + theme(text = element_text(size = 12)) + scale_y_log10() 
+total_ARO_plot_gen 
+
+#domestication context
+kruskal.test(total_ARO$total_ARO_TPM ~ total_ARO$dom_cat)
+pairwise.wilcox.test(total_ARO$total_ARO_TPM, total_ARO$dom_cat,
+                     p.adjust.method = "BH")
+total_ARO_plot <- ggplot(total_ARO_samples, aes(dom_cat, total_ARO_TPM, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter", size=4) + stat_summary(fun = "mean",geom = "crossbar", width = 0.5,colour = "black") + theme_bw() + theme(legend.position = "none") + theme(axis.title.x = element_blank())
+total_ARO_plot <- total_ARO_plot+ scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging domestic"="#52360b","free-ranging wild"="#36651e")) + ylab("Transcripts per million")
+total_ARO_plot <- total_ARO_plot + theme(text = element_text(size = 16)) + scale_y_log10() + stat_compare_means(comparisons=my_comparisons_mg)
+
+#difference in ARO abundance between domestic pigs
+total_ARO_dom <- subset(total_ARO, total_ARO$dom_cat != "free-ranging wild")
+pairwise.wilcox.test(total_ARO_dom$total_ARO_TPM, total_ARO_dom$dom_cat,
+                     p.adjust.method = "BH")
+total_ARO_plot_dom <- ggplot(total_ARO_dom, aes(dom_cat, total_ARO_TPM, fill=dom_cat)) + geom_violin(trim=FALSE) + geom_point(position="jitter") + theme_bw() + theme(legend.position = "none") + theme(axis.title.x = element_blank())
+total_ARO_plot_dom <- total_ARO_plot_dom + scale_fill_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging domestic"="#52360b")) + ylab("Transcripts per million") + labs(title="Total Abundance of ARGs across Genetically Domestic Pigs")
+total_ARO_plot_dom <- total_ARO_plot_dom + theme(text = element_text(size = 12)) + scale_y_log10() 
+
+#difference in ARO abundance between abx treated and not within domestic pigs
+wilcox.test(total_ARO_TPM ~ abx_exposure, total_ARO_dom)
+ggplot(total_ARO_dom, aes(location, total_ARO_TPM, fill=abx_exposure)) + geom_boxplot()
+
+#between wild populations 
+total_ARO_wild <- subset(total_ARO, total_ARO$dom_cat == "free-ranging wild")
+wilcox.test(total_ARO_TPM ~ location, total_ARO_wild)
+
+#between free-ranging domestic populations
+total_ARO_frd <- subset(total_ARO, total_ARO$dom_cat == "free-ranging domestic")
+wilcox.test(total_ARO_TPM ~ location, total_ARO_frd)
+
+#between research populations 
+total_ARO_research <- subset(total_ARO, total_ARO$dom_cat == "research")
+pairwise.wilcox.test(total_ARO_research$total_ARO_TPM, total_ARO_research$location,
+                      p.adjust.method = "BH")
+
+#between industrial populations
+total_ARO_ind <- subset(total_ARO, total_ARO$dom_cat == "industrial")
+wilcox.test(total_ARO_TPM ~ location, total_ARO_ind)
+
+#Heatmaps
+aro_t <- read_excel("aro_counts_transposed.xlsx")
+aro_t_long <- melt(aro_t, id="sampleid")
+write.csv(aro_t_long, "aro_t_long.csv")
+aro_t_long <- read.csv("aro_t_long.csv")
+aro_t_long$dom_cat <- factor(aro_t_long$dom_cat, levels=c("free-ranging wild","free-ranging domestic","industrial","research"))
+aro_t_long$TPM <- as.numeric(aro_t_long$TPM)
+aro_t_long$n_nas <- ifelse(aro_t_long$TPM==0,NA,aro_t_long$TPM)
+aro_t_long$ARO = factor(aro_t_long$ARO, levels=c("tet(W/N/W)","tetQ","tet(40)","tetO","tetW","lnuC","CfxA6","tet(45)","B. adolescentis rpoB mutants conferring resistance to rifampicin",
+         "adeF","tet(44)","mel","mdtC","mdtB","ErmG","tetX","SAT-4","Mef(En2)","AcrF","tet(Z)","APH(2'')-IIa","C. difficile conferring resistance to erythromycin and clindamycin","H. influenzae PBP3 conferring resistance to beta-lactam antibiotics",
+         "acrD","APH(3')-IIIa","mdtF","ErmB","aad(6)","ANT(4')-Ib","TolC","AcrE","ErmF","tetA(P)","msbA","E. coli ampC beta-lactamase",
+         "ACI-1","mdtP","gyrB conferring resistance to fluoroquinolones","vanTG","eptA","lnuA","E. coli ampH beta-lactamase","kdpE",
+         "mdtH","evgS","emrA","mdtA","tetB(P)","mdtO","acrB","E. coli EF-Tu mutants conferring resistance to Pulvomycin","tetM",
+         "cmx","E. coli ampC1 beta-lactamase","poxtA","LnuP","vanI","rmtF","aadS","tet(33)","mdtE","E. coli mdfA",
+        "tet(L)","baeR","bacA","baeS","ANT(6)-Ib","tet(D)","E. coli acrA","PmrF","YojI","mdtM","mdtG","E. coli soxS  conferring antibiotic resistance",
+        "APH(2'')-If","ErmA","emrB","CfxA2","APH(3'')-Ib","tet32","CRP","AAC(3)-IV","cpxA","Tet(X4)","emrY","ugd","mdtN","ErmQ",
+        "tet(C)","E. coli acrR  conferring multidrug antibiotic resistance","EC-15","lsaE","E. coli GlpT  conferring resistance to fosfomycin",
+        "emrK","ErmC","sul1","gadX","tet37","vanRG","ANT(6)-Ia","Klebsiella pneumoniae KpnE","aadA8","Tet(X1)","E. coli soxR  conferring antibiotic resistance",
+        "E. coli marR mutant conferring antibiotic resistance","AcrS","Tet(X3)","EC-18","lnuB","Klebsiella pneumoniae KpnF",
+        "emrR","APH(6)-Id","tet(K)","marA","vanUG","evgA","rsmA","Klebsiella pneumoniae KpnH","H-NS","ErmX","adeJ",
+        "AAC(6')-Im","aadA","EC-13","OXA-605","EC-8","OmpA","cmeB"))
+
+#heatmap of domestication contexts
+aro_t_long_dom_filt <- aro_t_long %>%
+  filter(n_nas > 50)
+aro_t_long_dom_filt$ARO = factor(aro_t_long_dom_filt$ARO, levels=c("tet(W/N/W)","tetQ","tet(40)","tetO","tetW","tet(45)","tet(44)","tetX","tetA(P)","tet(Z)","lnuC","ErmG","ErmB","ErmF","mdtC","mdtB", "mdtF","mdtP","mel","Mef(En2)",
+                                                                   "adeF", "aad(6)", "acrD", "APH(2'')-IIa","APH(3')-IIIa", "ANT(4')-Ib","AcrE","AcrF", "ACI-1", "CfxA6","TolC", "msbA","SAT-4","B. adolescentis rpoB mutants conferring resistance to rifampicin","C. difficile conferring resistance to erythromycin and clindamycin","H. influenzae PBP3 conferring resistance to beta-lactam antibiotics","E. coli ampC beta-lactamase","gyrB conferring resistance to fluoroquinolones"))
+
+heatmap2 <- ggplot(aro_t_long_dom_filt, mapping = aes(x=dom_cat,
+                                      y=ARO,
+                                      fill=log(n_nas))) + geom_tile(color="grey",
+                                                                    lwd = 0.5,
+                                                                    linetype = 1) + 
+scale_fill_gradient2(name="Transcripts per Million",low = "#FFFF00", mid = "#D22B2B", high = "#8B0000", midpoint = 6, na.value = "grey90") + 
+  scale_x_discrete(expand=c(0,0)) + scale_y_discrete(expand=c(0,0), limits=rev(levels(as.factor(aro_t_long_dom_filt$ARO)))) + 
+  ylab("Antibiotic Resistant Gene") + theme_bw() +  
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(legend.title=element_text(size=16), legend.text=element_text(size=16)) + 
+  theme(axis.title.x = element_blank()) + theme(axis.title.y = element_blank()) + 
+  guides(fill=guide_legend(title=" Log-Transformed\n Transcripts per Million")) + theme(axis.text = element_text(size = 16)) 
+
+#heatmap of populations 
+aro_t_long_dom_filt$location <- factor(aro_t_long_dom_filt$location, levels=c("Alabama","California","Vermont","Sage Mountain","Cal Poly","UC Davis", "BioPremier Source","North Carolina (1)","North Carolina (2)"))
+heatmap_locations <- ggplot(aro_t_long_dom_filt, mapping = aes(x=location, y=ARO,
+                                                      fill=log(n_nas))) + 
+  geom_tile(color="grey",
+            lwd = 0.5,
+            linetype = 1) + 
+  scale_fill_gradient2(name="Transcripts per Million",
+                       low = "#FFFF00",
+                       mid = "#D22B2B",
+                       high = "#8B0000", midpoint = 6) + scale_x_discrete(expand=c(0,0)) + 
+  scale_y_discrete(expand=c(0,0), limits=rev(levels(as.factor(aro_t_long_dom_filt$ARO)))) + ylab("Antibiotic Resistant Gene") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(axis.title.x = element_blank()) + theme(axis.title.y = element_blank()) + guides(fill=guide_legend(title=" Log-Transformed\n Transcripts per Million")) + 
+  theme(legend.title=element_text(size=18), legend.text=element_text(size=18)) + theme(axis.text = element_text(size = 20)) 
+heatmap_locations <- heatmap_locations + theme(plot.margin = margin(2,2,4,2, "cm"))
+ggsave("heatmap_locations.pdf", heatmap_locations, width=35, height=20)
+
+```
+
+```{r CARD - Drug Class}
+amr_strict = amr %>% filter(Cut_Off=="Strict")
+tx2gene_amr_strict_drug_class <- amr_strict %>% 
+  select(Contig, Drug.Class) %>%
+  rename(TXNAME = Contig, GENEID = Drug.Class)
+tx2gene_amr_strict_drug_class$GENEID <- ifelse(is.na(tx2gene_amr_strict_drug_class$GENEID), tx2gene_amr_strict_drug_class$TXNAME, tx2gene_amr_strict_drug_class$GENEID)
+write_tsv(tx2gene_amr_strict_drug_class, "amr_strict_drug_class_tx2gene.tsv")
+
+txi_drug <- read_tsv("amr_strict_drug_class_tx2gene.tsv") %>%
+  mutate(TXNAME=ifelse(grepl(pattern = "--k.*_[0-9]+_[0-9]_1$", x = TXNAME), gsub("_1$", "", TXNAME), TXNAME))
+write_tsv(txi_drug, "txi_drug.tsv")
+txi_drug <- read_tsv("txi_drug.tsv")
+samples <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/CARD_nucl/card_salmon_filepath.csv")
+samples_card_counts_drug_class <- tximport(files = samples$filepath, type = "salmon", tx2gene = txi_drug)
+
+samples_card_counts_drug_class_raw <- samples_card_counts_drug_class$counts
+colnames(samples_card_counts_drug_class_raw) <- samples$sample
+samples_card_counts_drug_class_raw <- as.data.frame(samples_card_counts_drug_class_raw)
+samples_card_counts_drug_class_raw$drug_class <- rownames(samples_card_counts_drug_class_raw)
+write_tsv(samples_card_counts_drug_class_raw, "card_counts_drug_class_raw.tsv")
+
+#lineage
+ddsTxi_drug_class <- DESeqDataSetFromTximport(samples_card_counts_drug_class,
+                                              colData = samples,
+                                              design = ~ genetics)
+
+dds_drug_class <- DESeq(ddsTxi_drug_class)
+res <- results(dds_drug_class)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(Drug.Class = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                 
+
+#domestication context
+ddsTxi_drug_class_dom <- DESeqDataSetFromTximport(samples_card_counts_drug_class,
+                                              colData = samples,
+                                              design = ~ dom_cat)
+
+dds_drug_class_dom <- DESeq(ddsTxi_drug_class_dom)
+res_dom <- results(dds_drug_class_dom, contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+res_dom_sig <- res_dom %>%
+  as.data.frame %>%
+  mutate(Drug.Class = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange) 
+
+#total Drug Classes
+drug_t <- read_excel("drug_counts_transposed.xlsx")
+drug_t_long <- melt(drug_t, id="sampleid")
+write.csv(drug_t_long, "drug_t_long.csv")
+drug_t_long_dom <- read.csv("drug_t_long.csv")
+drug_t_long_dom$dom_cat <- factor(drug_t_long_dom$dom_cat, levels=c("free-ranging wild","free-ranging domestic","industrial","research"))
+drug_t_long_dom$TPM <- as.numeric(drug_t_long_dom$TPM)
+drug_t_long_dom <- drug_t_long_dom %>% 
+  mutate(drug.class=strsplit(drug.class, "; ")) %>% 
+  unnest(drug.class)
+drug_t_long_dom$n_nas <- ifelse(drug_t_long_dom$TPM==0,NA,drug_t_long_dom$TPM)
+
+#heatmap of domestication contexts
+heatmap_drug2 <- ggplot(drug_t_long_dom, mapping = aes(x=dom_cat,
+                                                      y=drug.class,
+                                                      fill=log(n_nas))) + 
+  geom_tile() + 
+  scale_fill_gradient2(name="Transcripts per Million",
+                       low = "#FFFF00",
+                       mid = "#D22B2B",
+                       high = "#8B0000", midpoint = 6) + scale_x_discrete(expand=c(0,0)) + 
+  scale_y_discrete(expand=c(0,0), limits=rev(levels(as.factor(drug_t_long_dom$drug.class)))) + ylab("Antibiotic Drug Class") + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(axis.title.x = element_blank()) + guides(fill=guide_legend(title=" Log-Transformed\n Transcripts per Million"))
+
+#heatmap of populations within domestic pigs
+drug_dom <- subset(drug_t_long_dom_filt, drug_t_long_dom_filt$dom_cat != "free-ranging wild")
+heatmap_dom_locations <- ggplot(drug_dom, mapping = aes(x=location.2,
+                                                       y=drug.class,
+                                                       fill=log(TPM))) + 
+  geom_tile() + 
+  scale_fill_gradient2(name="Transcripts per Million",
+                       low = "#FFFF00",
+                       mid = "#D22B2B",
+                       high = "#8B0000", midpoint = 6) + scale_x_discrete(expand=c(0,0)) + 
+  scale_y_discrete(expand=c(0,0), limits=rev(levels(as.factor(drug_dom$drug.class)))) + ylab("Antibiotic Resistant Gene") + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(axis.title.x = element_blank()) + guides(fill=guide_legend(title=" Log-Transformed\n Transcripts per Million"))
+
+#heatmap of populations within wild pigs
+drug_wild <- subset(drug_t_long_dom_filt, drug_t_long_dom_filt$dom_cat == "free-ranging wild")
+heatmap_wild_locations <- ggplot(drug_wild, mapping = aes(x=location.2,
+                                                         y=drug.class,
+                                                         fill=log(TPM))) + 
+  geom_tile() + 
+  scale_fill_gradient2(name="Transcripts per Million",
+                       low = "#FFFF00",
+                       mid = "#D22B2B",
+                       high = "#8B0000", midpoint = 6) + scale_x_discrete(expand=c(0,0)) + 
+  scale_y_discrete(expand=c(0,0), limits=rev(levels(as.factor(drug_t_long_dom_filt$drug.class)))) + ylab("Antibiotic Resistant Gene") + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + theme(axis.title.x = element_blank()) + guides(fill=guide_legend(title=" Log-Transformed\n Transcripts per Million"))
+
+```
+
+```{r CARD - Resistance Mechanisms}
+amr_strict = amr %>% filter(Cut_Off=="Strict")
+tx2gene_res_strict <- amr_strict %>% 
+  select(Contig, Resistance.Mechanism) %>%
+  rename(TXNAME = Contig, GENEID = Resistance.Mechanism)
+tx2gene_res_strict$GENEID <- ifelse(is.na(tx2gene_res_strict$GENEID), tx2gene_res_strict$TXNAME, tx2gene_res_strict$GENEID)
+write_tsv(tx2gene_res_strict, "res_strict_tx2gene.tsv")
+txi_res <- read_tsv("res_strict_tx2gene.tsv") %>%
+  mutate(TXNAME=ifelse(grepl(pattern = "--k.*_[0-9]+_[0-9]_1$", x = TXNAME), gsub("_1$", "", TXNAME), TXNAME))
+write_tsv(txi_res, "txi_res.tsv")
+txi_res <- read.csv("txi_res.tsv")
+samples <- read.csv("/projects/ps-aspenlab/kuthyar/PIG/metagenomics/round2/CARD_nucl/card_salmon_filepath.csv")
+samples_res_counts <- tximport(files = samples$filepath, type = "salmon", tx2gene = txi_res)
+
+samples_res_counts_raw <- samples_res_counts$counts
+colnames(samples_res_counts_raw) <- samples$sample
+samples_res_counts_raw <- as.data.frame(samples_res_counts_raw)
+samples_res_counts_raw$ortholog <- rownames(samples_res_counts_raw)
+write_tsv(samples_res_counts_raw, "res_counts_raw.tsv")
+
+#lineage
+ddsTxi_res <- DESeqDataSetFromTximport(samples_res_counts,
+                                       colData = samples,
+                                       design = ~ genetics)
+dds_res <- DESeq(ddsTxi_res)
+dds_res <- saveRDS(dds_res,"dds_res.rds")
+dds_res <- readRDS("dds_res.rds")
+res <- results(dds_res)
+res_sig <- res %>%
+  as.data.frame %>%
+  mutate(Resistance.Mechanism = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)                 
+
+#domestication context
+ddsTxi_res_dom <- DESeqDataSetFromTximport(samples_res_counts,
+                                       colData = samples,
+                                       design = ~ dom_cat)
+dds_res_dom <- DESeq(ddsTxi_res_dom)
+dds_res_dom <- saveRDS(dds_res_dom,"dds_res_dom.rds")
+dds_res_dom <- readRDS("dds_res_dom.rds")
+res_dom <- results(dds_res_dom, contrast=c("dom_cat", "free-ranging domestic", "industrial"))
+res_dom_sig <- res_dom %>%
+  as.data.frame %>%
+  mutate(Drug.Class = rownames(.)) %>%
+  filter(padj < .001) %>%                  # p value less than .001 
+  arrange(log2FoldChange)               
+
+```
+
