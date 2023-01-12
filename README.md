@@ -25,4 +25,4 @@ The following files should be used in order to process raw shotgun metagenomic d
 
 Outputs will be annotation files and quantification files. The .RMD file will allow for replication of statistical analyses and visualizations. The excel file, "dom_cat_metagenomic_metadata.xlsx," contains all the metadata associated with the samples.
 
-
+The SNP.R file along with the plink.vcf and SNP_metadata.xlsx files can be used to replicate all SNP analyses. 
