@@ -1,4 +1,5 @@
-Code associated with "Pig microbial and immune traits respond to host evolutionary history and ecology across multiple scales."
+Code associated with "Domestication shapes the pig gut microbiome and immune traits from the scale of lineage to population."
+https://doi.org/10.1111/jeb.14227
 
 Description: These files will allow you to replicate the bioinformatic and statistical analyses we used to assess the impact of domestication on the pig gut microbiome and immune state. 
 
