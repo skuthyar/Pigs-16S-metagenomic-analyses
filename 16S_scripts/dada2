@@ -1,0 +1,112 @@
+# plot quality 
+# load dada2 
+library(dada2)
+packageVersion('dada2')
+
+# save sample names as R object
+sample.names <- scan("~/samples.txt", what="character")
+
+# create lists of file paths and names for the trimmed files
+trimFs <- paste0("~/trimmed/", sample.names, "_trimmed_R1.fastq")
+trimRs <- paste0("~/trimmed/", sample.names, "_trimmed_R2.fastq")
+
+# change directory to send the plots
+setwd("~/saved_output") 
+
+# create pdf of quality profiles for forward samples
+pdf("qual_profiles_F.pdf")
+plotQualityProfile(trimFs[10:16])
+plotQualityProfile(trimFs[51:57])
+plotQualityProfile(trimFs[101:107])
+plotQualityProfile(trimFs[201:207])
+dev.off()
+
+# create pdf of quality profiles for reverse samples
+pdf("qual_profiles_R.pdf")
+plotQualityProfile(trimFs[10:16])
+plotQualityProfile(trimFs[51:57])
+plotQualityProfile(trimFs[101:107])
+plotQualityProfile(trimFs[201:207])
+dev.off()
+
+export MODULEPATH=/projects/builder-group/jpg/modulefiles/applications:$MODULEPATH
+module load R/4.0.2
+Rscript --no-save ~/scripts/plot_qual.R
+
+# dada2
+library(dada2)
+packageVersion('dada2')
+
+# save sample names as R object
+sample.names <- scan("~/samples.txt", what="character")
+
+# create lists of file paths and names for trimmed reads
+trimFs <- paste0("~/trimmed/", sample.names, "_trimmed_R1.fastq")
+trimRs <- paste0("~/trimmed/", sample.names, "_trimmed_R2.fastq")
+
+# create lists of file paths and names for filtered reads
+filtFs <- paste0("~/filtered/", sample.names, "_filtered_R1.fastq")
+filtRs <- paste0("~/filtered/", sample.names, "_filtered_R2.fastq")
+
+# filter out reads based on quality score and truncate length
+filtered_out <- filterAndTrim(trimFs, filtFs, trimRs, filtRs, maxEE=c(2,2), rm.phix=TRUE, minLen=175, truncLen=c(230,230))
+saveRDS(filtered_out, "filtered_out.rds")
+
+# learn errors forward reads
+errF <- learnErrors(filtFs, multithread = TRUE)
+saveRDS(errF, "errF.rds")
+
+# learn errors reverse reads
+errR <- learnErrors(filtRs, multithread = TRUE)
+saveRDS(errR, "errR.rds")
+
+# dereplicate forward reads
+derepF <- derepFastq(filtFs, verbose = TRUE)
+names(derepF) <- sample.names
+saveRDS(derepF, "derepF.rds")
+
+# dereplicate reverse reads
+derepR <- derepFastq(filtRs, verbose = TRUE)
+names(derepR) <- sample.names
+saveRDS(derepR, "derepR.rds")
+
+# infer ASVs forward reads
+dadaF <- dada(derepF, err = errF, pool = "pseudo", multithread = TRUE)
+saveRDS(dadaF, "dadaF.rds")
+
+# infer ASVs reverse reads
+dadaR <- dada(derepR, err = errR, pool = "pseudo", multithread = TRUE)
+saveRDS(dadaR, "dadaR.rds")
+
+# merge amplicon pairs
+merged_amplicons <- mergePairs(dadaF, derepF, dadaR, derepR, verbose = TRUE)
+saveRDS(merged_amplicons, "merged_amplicons.rds")
+
+# create sequence table
+sequencetable <- makeSequenceTable(merged_amplicons)
+saveRDS(sequencetable, "sequence_table.rds")
+
+# remove chimeras
+sequencetable.nochim <- removeBimeraDenovo(sequencetable, method = "consensus", multithread = TRUE, verbose = TRUE)
+saveRDS(sequencetable.nochim, "sequencetable.nochim.rds")
+
+# percentage of reads retained after removing chimeras
+sum(sequencetable.nochim)/sum(sequencetable)
+
+# create table showing read count loss throughout the process
+getN <- function(x) sum(getUniques(x))
+summary_tab <- data.frame(row.names = sample.names,
+dada2_input = filtered_out[,1], filtered = filtered_out[,2],
+dada_f = sapply(dadaF, getN), dada_r = sapply(dadaR,getN),
+merged = sapply(merged_amplicons, getN),
+nonchim = rowSums(sequencetable.nochim),
+final_perc_reads_retained = round(rowSums(sequencetable.nochim)/filtered_out[,1]*100,1))
+write.table(summary_tab, "read_count_tracking.tsv", quote = FALSE, sep = "\t", col.names = NA)
+
+# assign taxonomy using SILVA 2019 database 
+taxonomy <- assignTaxonomy(sequencetable.nochim, "~/databases/silva_nr99_v138.1_wSpecies_train_set.fa.gz", multithread = TRUE)
+saveRDS(taxonomy, "taxonomy.rds")
+
+export MODULEPATH=/projects/builder-group/jpg/modulefiles/applications:$MODULEPATH
+module load R/4.0.2
+Rscript --no-save ~/scripts/dada2.R
