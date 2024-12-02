@@ -12,7 +12,7 @@ The 16S_scripts folder includes files that should be used in order to process ra
 
 The output will be an ASV decontaminated counts table, an ASV taxonomy table, and a phylogenetic tree. The R markdown file (16S_analyses.Rmd) will allow you to replicate any statistical analyses and visualizations for 16S rRNA gene sequencing. The excel file, fecal_metadata_Apr2022.xlsx, contains all the metadata needed for these analyses.
 
-###############################################################################################
+###################################################################################
 
 The metagenomics_scripts folder includes files should be used in order to process raw shotgun metagenomic data: 
 1. Quality filtering and trimming using Fastp
