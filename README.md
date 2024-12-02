@@ -3,7 +3,7 @@ https://doi.org/10.1111/jeb.14227
 
 Description: These files will allow you to replicate the bioinformatic and statistical analyses we used to assess the impact of domestication on the pig gut microbiome and immune state. 
 
-The following files should be used in order to process raw 16S rRNA gene sequencing data: 
+The 16S_scripts folder includes files that should be used in order to process raw 16S rRNA gene sequencing data: 
 1. Cutadapt to remove primers
 2. Dada2 to learn errors, dereplicate, infer ASVs, merge amplicons, make sequence tables, and assign taxonomy
 3. Decontam to remove contaminants, mitochondria, and chloroplasts
@@ -14,7 +14,7 @@ The output will be an ASV decontaminated counts table, an ASV taxonomy table, an
 
 ###############################################################################################
 
-The following files should be used in order to process raw shotgun metagenomic data: 
+The metagenomics_scripts folder includes files should be used in order to process raw shotgun metagenomic data: 
 1. Quality filtering and trimming using Fastp
 2. Map sequences against reference genome
 3. Assemble to contigs using megahit
@@ -24,6 +24,6 @@ The following files should be used in order to process raw shotgun metagenomic d
 7. Annotation with EggNog, CARD, and VFDB
 8. Salmon gene quantification
 
-Outputs will be annotation files and quantification files. The .RMD file will allow for replication of statistical analyses and visualizations. The excel file, "dom_cat_metagenomic_metadata.xlsx," contains all the metadata associated with the samples.
+Outputs will be annotation files and quantification files. The .Rmd file will allow for replication of statistical analyses and visualizations. The excel file, "dom_cat_metagenomic_metadata.xlsx," contains all the metadata associated with the samples.
 
 The SNP.R file along with the plink.vcf, PIG2.gds, and SNP_metadata.xlsx files can be used to replicate all SNP analyses. 
