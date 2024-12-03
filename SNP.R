@@ -1,5 +1,5 @@
 
-# SNP analyses ------------------------------------------------------------
+# SNP analyses 
 setwd("~/Documents/PIG/PIG_Analysis_Chapter_1/SNP")
 library(tidyverse) 
 library(reshape2)
@@ -17,13 +17,13 @@ genetics <- meta$genetics
 location <- meta$location
 sampleid <- meta$sampleid
 
-#phylogenetic tree
+# phylogenetic tree
 set.seed(100)
 ibs.hc<-snpgdsHCluster(snpgdsIBS(genofile,num.thread=2, autosome.only=FALSE))
 rv <- snpgdsCutTree(ibs.hc)
 plot(rv$dendrogram,main="Dendrogram based on SNPs")
 
-#PCA
+# PCA
 pca <- snpgdsPCA(genofile, snp.id = NULL, autosome.only = FALSE)
 
 dissMatrix  <-  snpgdsDiss(genofile , sample.id=NULL, snp.id=NULL,
@@ -41,12 +41,13 @@ pc.percent.two <- round(pc.percent, 2)[2]
 
 ggplot_Data <- pca$eigenvect %>% as.data.frame()
 
+# by domestication context
 SNP_domcat_location <- ggplot(ggplot_Data, aes(x=V1, y=V2, color=dom_cat, shape=location)) + geom_point(size=4.5) + scale_color_manual(values = c("industrial"="#963a3a","research"="#ac6d2c","free-ranging domestic"="#52360b","wild"="#36651e"), labels=c("industrial","research","free-ranging domestic","free-ranging wild")) + 
   scale_shape_manual(values=c(0,15,2,16,17,23,12,1,8)) + theme_bw() + xlab("PC1: 50.95%") + ylab("PC2: 6.64%") + theme(legend.title=element_blank()) + theme(legend.text=element_text(size=15))
   
 SNP_domcat_location
 
-#genetics
+# by genetics
 pdf("PCA.SNPRelate.genetics.pdf")
 pca <- snpgdsPCA(genofile, snp.id = NULL, autosome.only = FALSE)
 pc.percent <- pca$varprop*100
@@ -58,7 +59,7 @@ plot(pca$eigenvect[,1], pca$eigenvect[,2], pch=16, main = "SNP PCA", xlab=paste(
 legend(x="bottomright",legend=unique(as.factor(genetics)), col=unique(factor(genetics)), pch=16)
 dev.off()
 
-#population
+# by population
 pdf("PCA.SNPRelate.location.pdf")
 pca <- snpgdsPCA(genofile, snp.id = NULL, autosome.only = FALSE)
 pc.percent <- pca$varprop*100
@@ -70,7 +71,7 @@ plot(pca$eigenvect[,1], pca$eigenvect[,2], pch=16, main = "SNP PCA", xlab=paste(
 legend(x="bottomright",legend=unique(as.factor(location)), col=unique(factor(location)), pch=16)
 dev.off()
 
-#sampleid
+# by individual
 pdf("PCA.SNPRelate.sample.pdf")
 pca <- snpgdsPCA(genofile, snp.id = NULL, autosome.only = FALSE)
 pc.percent <- pca$varprop*100
@@ -82,7 +83,7 @@ plot(pca$eigenvect[,1], pca$eigenvect[,2], pch=16, main = "SNP PCA", xlab=paste(
 legend(x="bottomright",legend=unique(as.factor(sampleid)), col=unique(factor(sampleid)), pch=16)
 dev.off()
 
-#structure
+# structure
 structure2 <- read.delim("Pigs.2.structure.2.meanQ", header=TRUE)
 structure2_reshape <- melt(structure2)
 ggplot(structure2_reshape, aes(fill=variable, y=value, x=genetics)) + 
